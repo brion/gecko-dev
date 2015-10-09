@@ -217,7 +217,10 @@ OggDemuxer::Reset()
 nsresult
 OggDemuxer::ResetTrackState(TrackInfo::TrackType aType)
 {
-  return GetTrackCodecState(aType)->Reset();
+  OggCodecState *trackState = GetTrackCodecState(aType);
+  if (trackState) {
+    trackState->Reset();
+  }
 }
 
 void
@@ -235,14 +238,14 @@ OggDemuxer::ReadHeaders(OggCodecState* aState, MediaByteBuffer* aCodecSpecificCo
   nsAutoTArray<size_t,4> headerLens;
   while (!aState->DoneReadingHeaders()) {
     ogg_packet* packet = aState->PacketOut(); // ?
-    // DecodeHeader is responsible for releasing packet.
-    headers.AppendElement(packet->packet); // arrrrrgh who's releasing what here?
-    // @fixme: move this header bit into OggCodecState so ownership is clearer
-    headerLens.AppendElement(packet->bytes);
     if (!packet || !aState->DecodeHeader(packet)) {
       aState->Deactivate();
       return false;
     }
+    // Uh... DecodeHeader is supposedly responsible for releasing packet?
+    headers.AppendElement(packet->packet); // arrrrrgh who's releasing what here?
+    // @fixme: move this header bit into OggCodecState so ownership is clearer
+    headerLens.AppendElement(packet->bytes);
   }
   if (!XiphHeadersToExtradata(aCodecSpecificConfig, headers, headerLens)) {
     return false;
