@@ -237,8 +237,8 @@ OggDemuxer::ReadHeaders(OggCodecState* aState, MediaByteBuffer* aCodecSpecificCo
   nsAutoTArray<const unsigned char*,4> headers;
   nsAutoTArray<size_t,4> headerLens;
   while (!aState->DoneReadingHeaders()) {
-    //ogg_packet* packet = aState->PacketOut(); // ?
-    ogg_packet* packet = DemuxUntilPacketAvailable(aState);
+    DemuxUntilPacketAvailable(aState);
+    ogg_packet* packet = aState->PacketOut();
     if (!packet) {
       OGG_DEBUG("Ran out of header packets early; deactivating stream %ld", aState->mSerial);
       aState->Deactivate();
@@ -706,59 +706,25 @@ OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
   int r = 0;
   
   OggCodecState *state = GetTrackCodecState(aType);
-  //ogg_packet *pkt = state->PacketOut();
-  ogg_packet *pkt = DemuxUntilPacketAvailable(state);
-
-  //if (!pkt) {
-  //  return nullptr;
-  //}
-
-  unsigned char* data = pkt->packet;
-  size_t length = pkt->bytes;
-
-  // granulepos is end time
-  int64_t end_tstamp = state->Time(pkt->granulepos);
-  int64_t start_tstamp = state->StartTime(pkt->granulepos);
-
-  bool isKeyframe = false;
-  if (aType == TrackInfo::kAudioTrack) {
-    isKeyframe = true;
-  } else if (aType == TrackInfo::kVideoTrack) {
-    isKeyframe = isTheoraKeyframe(pkt);
-  }
-
-  OGG_DEBUG("push sample start_tstamp: %ld end_tstamp: %ld length: %ld kf: %d",
-             start_tstamp, end_tstamp, length, isKeyframe);
-  RefPtr<MediaRawData> sample = new MediaRawData(data, length);
-  sample->mTimecode = pkt->granulepos;
-  sample->mTime = start_tstamp;
-  sample->mDuration = end_tstamp - start_tstamp;
-  sample->mOffset = 0; //???
-  sample->mKeyframe = isKeyframe;
-
-  return sample;
+  //ogg_packet *pkt = DemuxUntilPacketAvailable(state);
+  DemuxUntilPacketAvailable(state);
+  return state->PacketOutAsMediaRawData();
+/*
+*/
 }
 
-ogg_packet *
+void
 OggDemuxer::DemuxUntilPacketAvailable(OggCodecState *state)
 {
-  ogg_packet *pkt = state->PacketOut();
-  while (pkt == nullptr) {
+  while (!state->IsPacketReady()) {
     OGG_DEBUG("no packet yet, reading some more");
     ogg_page page;
     if (!ReadOggPage(&page)) {
       OGG_DEBUG("no more pages to read in resource?");
-      return nullptr;
+      return;
     }
     DemuxOggPage(&page);
-    pkt = state->PacketOut();
   }
-  if (pkt) {
-    OGG_DEBUG("got a packet");
-  } else {
-    OGG_DEBUG("don't got a packet");
-  }
-  return pkt;
 }
 
 media::TimeIntervals
@@ -822,14 +788,6 @@ OggDemuxer::GetOffsetForTime(uint64_t aTime, int64_t* aOffset)
   //EnsureUpToDateIndex();
   //return mBufferedState && mBufferedState->GetOffsetForTime(aTime, aOffset);
   return false; // @fixme
-}
-
-bool
-OggDemuxer::isTheoraKeyframe(ogg_packet* pkt)
-{
-  // first bit of packet is 1 for header, 0 for data
-  // second bit of packet is 1 for inter frame, 0 for intra frame
-  return (pkt->bytes >= 1 && (pkt->packet[0] & 0x40) == 0x00);
 }
 
 

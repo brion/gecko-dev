@@ -43,8 +43,6 @@ public:
 
   bool GetOffsetForTime(uint64_t aTime, int64_t* aOffset);
 
-  bool isTheoraKeyframe(ogg_packet* pkt);
-
   // Demux next Ogg packet
   RefPtr<MediaRawData> GetNextPacket(TrackInfo::TrackType aType);
 
@@ -77,7 +75,7 @@ private:
   nsresult DemuxOggPage(ogg_page* aPage);
 
 	// Read data and demux until a packet is available on the given stream state
-	ogg_packet *DemuxUntilPacketAvailable(OggCodecState *state);
+	void DemuxUntilPacketAvailable(OggCodecState *state);
 
   // Reads and decodes header packets for aState, until either header decode
   // fails, or is complete. Initializes the codec state before returning.
