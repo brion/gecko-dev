@@ -219,8 +219,9 @@ OggDemuxer::ResetTrackState(TrackInfo::TrackType aType)
 {
   OggCodecState *trackState = GetTrackCodecState(aType);
   if (trackState) {
-    trackState->Reset();
+    return trackState->Reset();
   }
+  return NS_OK;
 }
 
 void
