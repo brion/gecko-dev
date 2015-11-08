@@ -239,15 +239,31 @@ OggDemuxer::ReadHeaders(OggCodecState* aState, MediaByteBuffer* aCodecSpecificCo
   while (!aState->DoneReadingHeaders()) {
     //ogg_packet* packet = aState->PacketOut(); // ?
     ogg_packet* packet = DemuxUntilPacketAvailable(aState);
-    if (!packet || !aState->DecodeHeader(packet)) {
-      OGG_DEBUG("Deactivating stream %ld", aState->mSerial);
+    if (!packet) {
+      OGG_DEBUG("Ran out of header packets early; deactivating stream %ld", aState->mSerial);
       aState->Deactivate();
       return false;
     }
-    // Uh... DecodeHeader is supposedly responsible for releasing packet?
-    headers.AppendElement(packet->packet); // arrrrrgh who's releasing what here?
-    // @fixme: move this header bit into OggCodecState so ownership is clearer
-    headerLens.AppendElement(packet->bytes);
+
+    if (aCodecSpecificConfig) {
+      // Save a copy of the header packet for the decoder to use later;
+      // OggCodecState::DecodeHeader will free it when processing locally.
+      size_t packetSize = packet->bytes;
+      unsigned char *packetData = static_cast<unsigned char *>(malloc(packetSize));
+      MOZ_ASSERT(packetData != nullptr, "Could not duplicate ogg header packet");
+      memcpy(packetData, packet->packet, packetSize);
+
+      headers.AppendElement(packetData);
+      headerLens.AppendElement(packetSize);
+    }
+
+    // Local OggCodecState needs to decode headers in order to process
+    // packet granulepos -> time mappings, etc.
+    if (!aState->DecodeHeader(packet)) {
+      OGG_DEBUG("Failed to decode ogg header packet; deactivating stream %ld", aState->mSerial);
+      aState->Deactivate();
+      return false;
+    }
   }
   if (!XiphHeadersToExtradata(aCodecSpecificConfig, headers, headerLens)) {
     return false;
@@ -274,6 +290,9 @@ OggDemuxer::BuildSerialList(nsTArray<uint32_t>& aTracks)
 bool
 OggDemuxer::SetupTargetTheora()
 {
+  if (!ReadHeaders(mTheoraState, mInfo.mVideo.mCodecSpecificConfig)) {
+    return false;
+  }
   nsIntRect picture = nsIntRect(mTheoraState->mInfo.pic_x,
                                 mTheoraState->mInfo.pic_y,
                                 mTheoraState->mInfo.pic_width,
@@ -326,6 +345,9 @@ OggDemuxer::SetupTargetVorbis()
 bool
 OggDemuxer::SetupTargetOpus()
 {
+  if (!ReadHeaders(mOpusState, mInfo.mAudio.mCodecSpecificConfig)) {
+    return false;
+  }
   mOpusPreSkip = mOpusState->mPreSkip;
 
   mInfo.mAudio.mMimeType = "audio/ogg; codecs=opus";
@@ -470,7 +492,6 @@ OggDemuxer::ReadMetadata()
     }
 
     int serial = ogg_page_serialno(&page);
-    OggCodecState* codecState = 0;
 
     if (!ogg_page_bos(&page)) {
       // We've encountered a non Beginning Of Stream page. No more BOS pages
@@ -481,26 +502,20 @@ OggDemuxer::ReadMetadata()
       // We've not encountered a stream with this serial number before. Create
       // an OggCodecState to demux it, and map that to the OggCodecState
       // in mCodecStates.
-      codecState = OggCodecState::Create(&page);
+      OggCodecState* codecState = OggCodecState::Create(&page);
       mCodecStore.Add(serial, codecState);
       bitstreams.AppendElement(codecState);
       serials.AppendElement(serial);
     }
-
-    codecState = mCodecStore.Get(serial);
-    NS_ENSURE_TRUE(codecState != nullptr, NS_ERROR_FAILURE);
-
-    if (NS_FAILED(codecState->PageIn(&page))) {
-      OGG_DEBUG("codecState->PageIn failed");
+    if (NS_FAILED(DemuxOggPage(&page))) {
       return NS_ERROR_FAILURE;
     }
   }
 
   // We've read all BOS pages, so we know the streams contained in the media.
-  // 1. Process all available header packets in the Theora, Vorbis/Opus bitstreams.
-  // 2. Find the first encountered Theora/Vorbis/Opus bitstream, and configure
+  // 1. Find the first encountered Theora/Vorbis/Opus bitstream, and configure
   //    it as the target A/V bitstream.
-  // 3. Deactivate the rest of bitstreams for now, until we have MediaInfo
+  // 2. Deactivate the rest of bitstreams for now, until we have MediaInfo
   //    support multiple track infos.
   for (uint32_t i = 0; i < bitstreams.Length(); ++i) {
     OggCodecState* s = bitstreams[i];
@@ -515,11 +530,10 @@ OggDemuxer::ReadMetadata()
           s->Deactivate();
         }
       } else if (s->GetType() == OggCodecState::TYPE_VORBIS) {
-        OGG_DEBUG("hey hey");
         if (!mHasAudio) {
-          OGG_DEBUG("batman");
           mVorbisSerial = s->mSerial;
           mVorbisState = static_cast<VorbisState*>(s);
+          mHasAudio = true;
         } else {
           OGG_DEBUG("Deactivating extra Vorbis stream %ld", s->mSerial);
           s->Deactivate();
@@ -549,6 +563,7 @@ OggDemuxer::ReadMetadata()
     }
   }
 
+  // 3. Process all available header packets in the Theora, Vorbis/Opus bitstreams.
   if (mTheoraState) {
     if (SetupTargetTheora()) {
       OGG_DEBUG("Set up Theora stream %ld", mTheoraState->mSerial);
@@ -654,18 +669,20 @@ OggDemuxer::ReadOggPage(ogg_page* aPage)
   return true;
 }
 
-void
+nsresult
 OggDemuxer::DemuxOggPage(ogg_page* aPage)
 {
-  if (mVorbisState) {
-    mVorbisState->PageIn(aPage);
+  int serial = ogg_page_serialno(aPage);
+  OggCodecState* codecState = mCodecStore.Get(serial);
+  if (codecState == nullptr) {
+    OGG_DEBUG("encountered packet for unrecognized codecState");
+    return NS_ERROR_FAILURE;
   }
-  if (mOpusState) {
-    mOpusState->PageIn(aPage);
+  if (NS_FAILED(codecState->PageIn(aPage))) {
+    OGG_DEBUG("codecState->PageIn failed");
+    return NS_ERROR_FAILURE;
   }
-  if (mTheoraState) {
-    mTheoraState->PageIn(aPage);
-  }
+  return NS_OK;
 }
 
 bool

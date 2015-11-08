@@ -74,7 +74,7 @@ private:
 	// Send a page off to the individual streams it belongs to.
 	// Reconstructed packets, if any are ready, will be available
 	// on the individual OggCodecStates.
-  void DemuxOggPage(ogg_page* aPage);
+  nsresult DemuxOggPage(ogg_page* aPage);
 
 	// Read data and demux until a packet is available on the given stream state
 	ogg_packet *DemuxUntilPacketAvailable(OggCodecState *state);
