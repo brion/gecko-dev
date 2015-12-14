@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+ /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et cindent: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -27,7 +27,7 @@ namespace mozilla {
 
 using namespace gfx;
 
-extern PRLogModuleInfo* gMediaDecoderLog;
+extern LazyLogModule gMediaDecoderLog;
 
 // Return the corresponding category in aKind based on the following specs.
 // (https://www.whatwg.org/specs/web-apps/current-
@@ -383,7 +383,7 @@ OggDemuxer::SetupTargetSkeleton()
       BuildSerialList(tracks);
       int64_t duration = 0;
       if (NS_SUCCEEDED(mSkeletonState->GetDuration(tracks, duration))) {
-        LOG(LogLevel::Debug, ("Got duration from Skeleton index %lld", duration));
+        OGG_DEBUG("Got duration from Skeleton index %lld", duration);
         mInfo.mMetadataDuration.emplace(media::TimeUnit::FromMicroseconds(duration));
       }
     }
@@ -736,6 +736,8 @@ OggDemuxer::GetBuffered()
 
   media::TimeIntervals buffered;
 
+  return media::TimeIntervals();
+  /*
   nsTArray<MediaByteRange> ranges;
   nsresult rv = resource->GetCachedRanges(ranges);
   if (NS_FAILED(rv)) {
@@ -743,6 +745,7 @@ OggDemuxer::GetBuffered()
   }
   uint64_t duration = 0;
   uint64_t startOffset = 0;
+  */
   /*
   if (!nestegg_duration(mContext, &duration)) {
     if(mBufferedState->GetStartTime(&startOffset)) {

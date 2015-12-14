@@ -20,7 +20,7 @@ namespace mozilla {
 using namespace gfx;
 using namespace layers;
 
-extern PRLogModuleInfo* gMediaDecoderLog;
+extern LazyLogModule gMediaDecoderLog;
 
 ogg_packet InitTheoraPacket(const unsigned char* aData, size_t aLength,
                          bool aBOS, bool aEOS,

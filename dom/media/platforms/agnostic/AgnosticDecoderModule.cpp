@@ -8,6 +8,7 @@
 #include "OpusDecoder.h"
 #include "VorbisDecoder.h"
 #include "VPXDecoder.h"
+#include "TheoraDecoder.h"
 
 namespace mozilla {
 
@@ -16,7 +17,8 @@ AgnosticDecoderModule::SupportsMimeType(const nsACString& aMimeType) const
 {
   return VPXDecoder::IsVPX(aMimeType) ||
     OpusDataDecoder::IsOpus(aMimeType) ||
-    VorbisDataDecoder::IsVorbis(aMimeType);
+    VorbisDataDecoder::IsVorbis(aMimeType) ||
+	TheoraDecoder::IsTheora(aMimeType);
 }
 
 already_AddRefed<MediaDataDecoder>
@@ -33,6 +35,11 @@ AgnosticDecoderModule::CreateVideoDecoder(const VideoInfo& aConfig,
                        aImageContainer,
                        aVideoTaskQueue,
                        aCallback);
+  } else if (TheoraDecoder::IsTheora(aConfig.mMimeType)) {
+    m = new TheoraDecoder(*aConfig.GetAsVideoInfo(),
+                          aImageContainer,
+                          aVideoTaskQueue,
+                          aCallback);
   }
 
   return m.forget();
