@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "TheoraDecoder.h"
+#include "XiphExtradata.h"
 #include "gfx2DGlue.h"
 #include "nsError.h"
 #include "TimeUnits.h"
@@ -74,24 +75,20 @@ TheoraDecoder::Init()
   th_comment_init(&mTheoraComment);
   th_info_init(&mTheoraInfo);
 
-  size_t available = mInfo.mCodecSpecificConfig->Length();
-  uint8_t *p = mInfo.mCodecSpecificConfig->Elements();
-  for(int i = 0; i < 3; i++) {
-    if (available < 2) {
-      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-    }
-    available -= 2;
-    size_t length = BigEndian::readUint16(p);
-    p += 2;
-    if (available < length) {
-      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-    }
-    available -= length;
-    if (NS_FAILED(DecodeHeader((const unsigned char*)p, length))) {
-      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-    }
-    p += length;
+  nsAutoTArray<unsigned char*, 4> headers;
+  nsAutoTArray<size_t, 4> headerLens;
+  if (!XiphExtradataToHeaders(headers, headerLens,
+	mInfo.mCodecSpecificConfig->Elements(),
+	mInfo.mCodecSpecificConfig->Length())) {
+	return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
   }
+  for (size_t i = 0; i < headers.Length(); i++) {
+    if (NS_FAILED(DecodeHeader(headers[i], headerLens[i]))) {
+      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+    }
+  }
+
+  MOZ_ASSERT(mPacketCount == 3);
 
   return InitPromise::CreateAndResolve(TrackInfo::kVideoTrack, __func__);
 }
@@ -127,7 +124,7 @@ TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
   size_t aLength = aSample->Size();
 
   bool bos = mPacketCount == 0;
-  ogg_packet pkt = InitTheoraPacket(aData, aLength, bos, false, 0, mPacketCount++);
+  ogg_packet pkt = InitTheoraPacket(aData, aLength, bos, false, aSample->mTimecode, mPacketCount++);
 
   int ret = th_decode_packetin(mTheoraDecoderContext, &pkt, nullptr);
   if (ret == 0 || ret == TH_DUPFRAME) {
