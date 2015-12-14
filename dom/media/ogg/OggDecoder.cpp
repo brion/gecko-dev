@@ -18,7 +18,7 @@ MediaDecoderStateMachine* OggDecoder::CreateStateMachine()
   bool useFormatDecoder =
     Preferences::GetBool("media.format-reader.ogg", true);
   RefPtr<MediaDecoderReader> reader = useFormatDecoder ?
-      static_cast<MediaDecoderReader*>(new MediaFormatReader(this, new OggDemuxer(GetResource()))) :
+      static_cast<MediaDecoderReader*>(new MediaFormatReader(this, new OggDemuxer(GetResource()), GetVideoFrameContainer())) :
       new OggReader(this);
   return new MediaDecoderStateMachine(this, reader);
 }
