@@ -45,12 +45,12 @@ TheoraDecoder::TheoraDecoder(const VideoInfo& aConfig,
   , mTaskQueue(aTaskQueue)
   , mCallback(aCallback)
   , mInfo(aConfig)
+  , mTheoraSetupInfo(nullptr)
+  , mTheoraDecoderContext(nullptr)
+  , mTheoraHeaders(0)
+  , mPacketCount(0)
 {
   MOZ_COUNT_CTOR(TheoraDecoder);
-  mTheoraSetupInfo = nullptr;
-  mTheoraDecoderContext = nullptr;
-  mTheoraHeaders = 0;
-  mPacketCount = 0;
 }
 
 TheoraDecoder::~TheoraDecoder()
@@ -78,9 +78,9 @@ TheoraDecoder::Init()
   nsAutoTArray<unsigned char*, 4> headers;
   nsAutoTArray<size_t, 4> headerLens;
   if (!XiphExtradataToHeaders(headers, headerLens,
-	mInfo.mCodecSpecificConfig->Elements(),
-	mInfo.mCodecSpecificConfig->Length())) {
-	return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+                              mInfo.mCodecSpecificConfig->Elements(),
+                              mInfo.mCodecSpecificConfig->Length())) {
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
   }
   for (size_t i = 0; i < headers.Length(); i++) {
     if (NS_FAILED(DecodeHeader(headers[i], headerLens[i]))) {
@@ -88,7 +88,10 @@ TheoraDecoder::Init()
     }
   }
 
-  MOZ_ASSERT(mPacketCount == 3);
+  if (mPacketCount != 3) {
+    // Theora always has 3 header packets!
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+  }
 
   mTheoraDecoderContext = th_decode_alloc(&mTheoraInfo, mTheoraSetupInfo);
   if (mTheoraDecoderContext) {
@@ -96,7 +99,6 @@ TheoraDecoder::Init()
   } else {
     return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
   }
-
 }
 
 nsresult
@@ -122,10 +124,6 @@ TheoraDecoder::DecodeHeader(const unsigned char* aData, size_t aLength)
 int
 TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
 {
-#if defined(DEBUG)
-  // ...
-#endif
-
   const unsigned char* aData = aSample->Data();
   size_t aLength = aSample->Size();
 
@@ -162,14 +160,14 @@ TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
     VideoInfo info;
     info.mDisplay = mInfo.mDisplay;
     RefPtr<VideoData> v = VideoData::Create(info,
-                                              mImageContainer,
-                                              aSample->mOffset,
-                                              aSample->mTime,
-                                              aSample->mDuration,
-                                              b,
-                                              aSample->mKeyframe,
-                                              aSample->mTimecode,
-                                              mInfo.mImage);
+                                            mImageContainer,
+                                            aSample->mOffset,
+                                            aSample->mTime,
+                                            aSample->mDuration,
+                                            b,
+                                            aSample->mKeyframe,
+                                            aSample->mTimecode,
+                                            mInfo.mImage);
 
     if (!v) {
       LOG("Image allocation error source %ldx%ld display %ldx%ld picture %ldx%ld",
