@@ -90,7 +90,13 @@ TheoraDecoder::Init()
 
   MOZ_ASSERT(mPacketCount == 3);
 
-  return InitPromise::CreateAndResolve(TrackInfo::kVideoTrack, __func__);
+  mTheoraDecoderContext = th_decode_alloc(&mTheoraInfo, mTheoraSetupInfo);
+  if (mTheoraDecoderContext) {
+    return InitPromise::CreateAndResolve(TrackInfo::kVideoTrack, __func__);
+  } else {
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+  }
+
 }
 
 nsresult
