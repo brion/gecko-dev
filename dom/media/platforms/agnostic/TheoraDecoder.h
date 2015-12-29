@@ -41,7 +41,6 @@ private:
   void DecodeFrame (MediaRawData* aSample);
   int DoDecodeFrame (MediaRawData* aSample);
   void DoDrain ();
-  void OutputDelayedFrames ();
 
   RefPtr<ImageContainer> mImageContainer;
   RefPtr<FlushableTaskQueue> mTaskQueue;
