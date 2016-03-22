@@ -329,11 +329,11 @@ OggDemuxer::SetupTargetVorbis()
   if (!ReadHeaders(mVorbisState, mInfo.mAudio.mCodecSpecificConfig)) {
     return false;
   }
-  
+
   // Copy Vorbis info data for time computations on other threads.
   memcpy(&mVorbisInfo, &mVorbisState->mInfo, sizeof(mVorbisInfo));
   mVorbisInfo.codec_setup = nullptr;
-  
+
   mInfo.mAudio.mMimeType = "audio/ogg; codecs=vorbis";
 
   // @fixme duration?
@@ -359,7 +359,7 @@ OggDemuxer::SetupTargetOpus()
 
   // @fixme codec-specific setup info
   //uint8_t c[sizeof(unit64_t)];
-  //BigEndian::writeUint64(&c[0], mCodecDelay); 
+  //BigEndian::writeUint64(&c[0], mCodecDelay);
   //mInfo.mAudio.mCodecSpecificConfig->AppendElements(&c[0], sizeof(uint64_t));
 
   return false; // not yet implemented fully
@@ -705,7 +705,7 @@ RefPtr<MediaRawData>
 OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
 {
   int r = 0;
-  
+
   OggCodecState *state = GetTrackCodecState(aType);
   //ogg_packet *pkt = DemuxUntilPacketAvailable(state);
   DemuxUntilPacketAvailable(state);
@@ -823,14 +823,19 @@ OggTrackDemuxer::Seek(media::TimeUnit aTime)
   // actual time seeked to. Typically the random access point time
 
   media::TimeUnit seekTime = aTime;
-  mParent->SeekInternal(aTime);
-  RefPtr<MediaRawData> sample(NextSample());
+  if (mParent->SeekInternal(aTime) == NS_OK) {
+    RefPtr<MediaRawData> sample(NextSample());
 
-  // Check what time we actually seeked to.
-  seekTime = media::TimeUnit::FromMicroseconds(sample->mTime);
-  mQueuedSample = sample;
+    // Check what time we actually seeked to.
+    if (sample != nullptr) {
+      seekTime = media::TimeUnit::FromMicroseconds(sample->mTime);
+    }
+    mQueuedSample = sample;
 
-  return SeekPromise::CreateAndResolve(seekTime, __func__);
+    return SeekPromise::CreateAndResolve(seekTime, __func__);
+  } else {
+    return SeekPromise::CreateAndReject(DemuxerFailureReason::DEMUXER_ERROR, __func__);
+  }
 }
 
 RefPtr<MediaRawData>
