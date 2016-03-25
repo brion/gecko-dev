@@ -172,8 +172,8 @@ private:
   th_info mTheoraInfo;
 
   // Booleans to indicate if we have audio and/or video data
-  bool mHasVideo;
-  bool mHasAudio;
+  bool HasVideo() const;
+  bool HasAudio() const;
 
   // The picture region inside Theora frame to be displayed, if we have
   // a Theora video track.

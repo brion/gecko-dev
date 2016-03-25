@@ -91,9 +91,7 @@ OggDemuxer::OggDemuxer(MediaResource* aResource)
     mOpusPreSkip(0),
     mIsChained(false),
     mDecodedAudioFrames(0),
-    mResource(aResource),
-    mHasAudio(false),
-    mHasVideo(false)
+    mResource(aResource)
 {
   MOZ_COUNT_CTOR(OggDemuxer);
   memset(&mTheoraInfo, 0, sizeof(mTheoraInfo));
@@ -104,6 +102,20 @@ OggDemuxer::~OggDemuxer()
   Reset();
   Cleanup();
   MOZ_COUNT_DTOR(OggDemuxer);
+}
+
+bool
+OggDemuxer::HasAudio()
+const
+{
+  return (mVorbisState != nullptr) || (mOpusState != nullptr);
+}
+
+bool
+OggDemuxer::HasVideo()
+const
+{
+  return (mTheoraState != nullptr);
 }
 
 RefPtr<OggDemuxer::InitPromise>
@@ -158,9 +170,9 @@ OggDemuxer::GetNumberTracks(TrackInfo::TrackType aType) const
 {
   switch(aType) {
     case TrackInfo::kAudioTrack:
-      return mHasAudio ? 1 : 0;
+      return HasAudio() ? 1 : 0;
     case TrackInfo::kVideoTrack:
-      return mHasVideo ? 1 : 0;
+      return HasVideo() ? 1 : 0;
     default:
       return 0;
   }
@@ -276,10 +288,10 @@ void
 OggDemuxer::BuildSerialList(nsTArray<uint32_t>& aTracks)
 {
   // Obtaining seek index information for currently active bitstreams.
-  if (mHasVideo) {
+  if (HasVideo()) {
     aTracks.AppendElement(mTheoraState->mSerial);
   }
-  if (mHasAudio) {
+  if (HasAudio()) {
     if (mVorbisState) {
       aTracks.AppendElement(mVorbisState->mSerial);
     } else if (mOpusState) {
@@ -371,7 +383,7 @@ OggDemuxer::SetupTargetSkeleton()
   // Setup skeleton related information after mVorbisState & mTheroState
   // being set (if they exist).
   if (mSkeletonState) {
-    if (!mHasAudio && !mHasVideo) {
+    if (!HasAudio() && !HasVideo()) {
       // We have a skeleton track, but no audio or video, may as well disable
       // the skeleton, we can't do anything useful with this media.
       OGG_DEBUG("Deactivating skeleton stream %ld", mSkeletonState->mSerial);
@@ -522,29 +534,26 @@ OggDemuxer::ReadMetadata()
     OggCodecState* s = bitstreams[i];
     if (s) {
       if (s->GetType() == OggCodecState::TYPE_THEORA) {
-        if (!mHasVideo) {
+        if (!HasVideo()) {
           mTheoraSerial = s->mSerial;
           mTheoraState = static_cast<TheoraState*>(s);
-          mHasVideo = true;
         } else {
           OGG_DEBUG("Deactivating extra Theora stream %ld", s->mSerial);
           s->Deactivate();
         }
       } else if (s->GetType() == OggCodecState::TYPE_VORBIS) {
-        if (!mHasAudio) {
+        if (!HasAudio()) {
           mVorbisSerial = s->mSerial;
           mVorbisState = static_cast<VorbisState*>(s);
-          mHasAudio = true;
         } else {
           OGG_DEBUG("Deactivating extra Vorbis stream %ld", s->mSerial);
           s->Deactivate();
         }
       } else if (s->GetType() == OggCodecState::TYPE_OPUS /*&& ReadHeaders(s) whaaaat?*/) {
         if (mOpusEnabled) {
-          if (!mHasAudio) {
+          if (!HasAudio()) {
             mOpusSerial = s->mSerial;
             mOpusState = static_cast<OpusState*>(s);
-            mHasAudio = true;
           } else {
             OGG_DEBUG("Deactivating extra Opus stream %ld", s->mSerial);
             s->Deactivate();
@@ -574,7 +583,7 @@ OggDemuxer::ReadMetadata()
       mTheoraState->Reset();
       mTheoraState = nullptr;
       mTheoraSerial = 0;
-      mHasVideo = false;
+      // @fixme if this failed we should be able to fall over to opus or...?
     }
   }
   if (mVorbisState) {
@@ -586,7 +595,6 @@ OggDemuxer::ReadMetadata()
       mVorbisState->Reset();
       mVorbisState = nullptr;
       mVorbisSerial = 0;
-      mHasAudio = false;
     }
   }
   if (mOpusState) {
@@ -598,14 +606,13 @@ OggDemuxer::ReadMetadata()
       mOpusState->Reset();
       mOpusState = nullptr;
       mOpusSerial = 0;
-      mHasAudio = false;
     }
   }
 
   SetupTargetSkeleton();
   SetupMediaTracksInfo(serials);
 
-  if (mHasAudio || mHasVideo) {
+  if (HasAudio() || HasVideo()) {
     //ReentrantMonitorAutoEnter mon(mDecoder->GetReentrantMonitor());
 
     if (mInfo.mMetadataDuration.isNothing() /*&& !mDecoder->IsOggDecoderShutdown()*/ &&
