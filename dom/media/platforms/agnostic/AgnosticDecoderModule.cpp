@@ -41,7 +41,7 @@ AgnosticDecoderModule::CreateVideoDecoder(const VideoInfo& aConfig,
   } else if (TheoraDecoder::IsTheora(aConfig.mMimeType)) {
     m = new TheoraDecoder(*aConfig.GetAsVideoInfo(),
                           aImageContainer,
-                          aVideoTaskQueue,
+                          aTaskQueue,
                           aCallback);
   }
 

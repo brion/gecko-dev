@@ -324,7 +324,7 @@ OggDemuxer::SetupTargetTheora()
     // Video track's frame sizes will not overflow. Activate the video track.
     mInfo.mVideo.mMimeType = "video/ogg; codecs=theora";
     mInfo.mVideo.mDisplay = displaySize;
-    mInfo.mVideo.mImage = picture;
+    mInfo.mVideo.SetImageRect(picture);
 
     // @fixme set mInfo.mVideo.mDuration?
 

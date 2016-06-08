@@ -21,7 +21,7 @@ class TheoraDecoder : public MediaDataDecoder
 public:
   TheoraDecoder(const VideoInfo& aConfig,
              ImageContainer* aImageContainer,
-             FlushableTaskQueue* aTaskQueue,
+             TaskQueue* aTaskQueue,
              MediaDataDecoderCallback* aCallback);
 
   ~TheoraDecoder();
@@ -44,11 +44,11 @@ private:
   nsresult DecodeHeader(const unsigned char* aData, size_t aLength);
 
   void DecodeFrame (MediaRawData* aSample);
-  int DoDecodeFrame (MediaRawData* aSample);
-  void DoDrain ();
+  int ProcessDecodeFrame (MediaRawData* aSample);
+  void ProcessDrain ();
 
   RefPtr<ImageContainer> mImageContainer;
-  RefPtr<FlushableTaskQueue> mTaskQueue;
+  RefPtr<TaskQueue> mTaskQueue;
   MediaDataDecoderCallback* mCallback;
 
   // Theora header & decoder state

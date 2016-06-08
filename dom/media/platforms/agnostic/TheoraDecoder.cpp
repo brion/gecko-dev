@@ -39,7 +39,7 @@ ogg_packet InitTheoraPacket(const unsigned char* aData, size_t aLength,
 
 TheoraDecoder::TheoraDecoder(const VideoInfo& aConfig,
                        ImageContainer* aImageContainer,
-                       FlushableTaskQueue* aTaskQueue,
+                       TaskQueue* aTaskQueue,
                        MediaDataDecoderCallback* aCallback)
   : mImageContainer(aImageContainer)
   , mTaskQueue(aTaskQueue)
@@ -102,7 +102,6 @@ TheoraDecoder::Init()
 nsresult
 TheoraDecoder::Flush()
 {
-  mTaskQueue->Flush();
   return NS_OK;
 }
 
@@ -120,7 +119,7 @@ TheoraDecoder::DecodeHeader(const unsigned char* aData, size_t aLength)
 }
 
 int
-TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
+TheoraDecoder::ProcessDecodeFrame(MediaRawData* aSample)
 {
 #if defined(DEBUG)
   // ...
@@ -159,6 +158,9 @@ TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
     b.mPlanes[2].mWidth = mTheoraInfo.frame_width >> hdec;
     b.mPlanes[2].mOffset = b.mPlanes[2].mSkip = 0;
 
+    IntRect pictureArea(mTheoraInfo.pic_x, mTheoraInfo.pic_y,
+                        mTheoraInfo.pic_width, mTheoraInfo.pic_height);
+
     VideoInfo info;
     info.mDisplay = mInfo.mDisplay;
     RefPtr<VideoData> v = VideoData::Create(info,
@@ -169,7 +171,7 @@ TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
                                               b,
                                               aSample->mKeyframe,
                                               aSample->mTimecode,
-                                              mInfo.mImage);
+                                              pictureArea);
 
     if (!v) {
       LOG("Image allocation error source %ldx%ld display %ldx%ld picture %ldx%ld",
@@ -188,8 +190,8 @@ TheoraDecoder::DoDecodeFrame(MediaRawData* aSample)
 void
 TheoraDecoder::DecodeFrame(MediaRawData* aSample)
 {
-  if (DoDecodeFrame(aSample) == -1) {
-    mCallback->Error();
+  if (ProcessDecodeFrame(aSample) == -1) {
+    mCallback->Error(MediaDataDecoderError::DECODE_ERROR);
   } else if (mTaskQueue->IsEmpty()) {
     mCallback->InputExhausted();
   }
@@ -199,7 +201,7 @@ nsresult
 TheoraDecoder::Input(MediaRawData* aSample)
 {
   nsCOMPtr<nsIRunnable> runnable(
-    NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
+    NewRunnableMethod<RefPtr<MediaRawData>>(
       this, &TheoraDecoder::DecodeFrame,
       RefPtr<MediaRawData>(aSample)));
   mTaskQueue->Dispatch(runnable.forget());
@@ -208,7 +210,7 @@ TheoraDecoder::Input(MediaRawData* aSample)
 }
 
 void
-TheoraDecoder::DoDrain()
+TheoraDecoder::ProcessDrain()
 {
   mCallback->DrainComplete();
 }
@@ -217,7 +219,7 @@ nsresult
 TheoraDecoder::Drain()
 {
   nsCOMPtr<nsIRunnable> runnable(
-    NS_NewRunnableMethod(this, &TheoraDecoder::DoDrain));
+    NewRunnableMethod(this, &TheoraDecoder::ProcessDrain));
   mTaskQueue->Dispatch(runnable.forget());
 
   return NS_OK;
