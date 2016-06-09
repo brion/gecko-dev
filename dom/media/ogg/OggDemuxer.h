@@ -13,8 +13,6 @@
 
 namespace mozilla {
 
-class NesteggPacketHolder;
-
 class OggTrackDemuxer;
 
 class OggDemuxer : public MediaDataDemuxer
@@ -28,8 +26,6 @@ public:
 
   uint32_t GetNumberTracks(TrackInfo::TrackType aType) const override;
 
-  UniquePtr<TrackInfo> GetTrackInfo(TrackInfo::TrackType aType, size_t aTrackNumber) const;
-
   already_AddRefed<MediaTrackDemuxer> GetTrackDemuxer(TrackInfo::TrackType aType,
                                                       uint32_t aTrackNumber) override;
 
@@ -37,27 +33,31 @@ public:
 
   UniquePtr<EncryptionInfo> GetCrypto() override;
 
+
+private:
+
+  // helpers for friend OggTrackDemuxer
+  UniquePtr<TrackInfo> GetTrackInfo(TrackInfo::TrackType aType, size_t aTrackNumber) const;
+
   media::TimeIntervals GetBuffered();
 
-  nsresult SeekInternal(const media::TimeUnit& aTarget);
-
   bool GetOffsetForTime(uint64_t aTime, int64_t* aOffset);
+
+  nsresult SeekInternal(const media::TimeUnit& aTarget);
 
   // Demux next Ogg packet
   RefPtr<MediaRawData> GetNextPacket(TrackInfo::TrackType aType);
 
-  nsresult Reset();
-
-  // for OggTrackDemuxer::Reset
   nsresult ResetTrackState(TrackInfo::TrackType aType);
 
-private:
+  nsresult Reset();
 
   static const nsString GetKind(const nsCString& aRole);
   static void InitTrack(MessageField* aMsgInfo,
                       TrackInfo* aInfo,
                       bool aEnable);
 
+  // Really private!
   ~OggDemuxer();
   void Cleanup();
 
@@ -188,6 +188,8 @@ private:
   int64_t mDecodedAudioFrames;
 
   MediaResourceIndex mResource;
+
+  friend class OggTrackDemuxer;
 };
 
 class OggTrackDemuxer : public MediaTrackDemuxer
@@ -212,7 +214,6 @@ public:
   void BreakCycles() override;
 
 private:
-  friend class OggDemuxer;
   ~OggTrackDemuxer();
   void SetNextKeyFrameTime();
   RefPtr<MediaRawData> NextSample();

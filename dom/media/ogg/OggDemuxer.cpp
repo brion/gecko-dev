@@ -711,8 +711,6 @@ OggDemuxer::GetCrypto()
 RefPtr<MediaRawData>
 OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
 {
-  int r = 0;
-
   OggCodecState *state = GetTrackCodecState(aType);
   //ogg_packet *pkt = DemuxUntilPacketAvailable(state);
   DemuxUntilPacketAvailable(state);
@@ -802,8 +800,8 @@ OggDemuxer::GetOffsetForTime(uint64_t aTime, int64_t* aOffset)
 
 //OggTrackDemuxer
 OggTrackDemuxer::OggTrackDemuxer(OggDemuxer* aParent,
-                                   TrackInfo::TrackType aType,
-                                   uint32_t aTrackNumber)
+                                 TrackInfo::TrackType aType,
+                                 uint32_t aTrackNumber)
   : mParent(aParent)
   , mType(aType)
 {
