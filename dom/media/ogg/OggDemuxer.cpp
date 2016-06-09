@@ -593,6 +593,12 @@ OggDemuxer::ReadMetadata()
       }
       if (endTime != -1) {
         mInfo.mUnadjustedMetadataEndTime.emplace(media::TimeUnit::FromMicroseconds(endTime));
+        if (HasAudio()) {
+          mInfo.mAudio.mDuration = endTime;
+        }
+        if (HasVideo()) {
+          mInfo.mVideo.mDuration = endTime;
+        }
         OGG_DEBUG("Got Ogg duration from seeking to end %lld", endTime);
       }
     }
