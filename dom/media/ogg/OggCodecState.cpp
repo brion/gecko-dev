@@ -680,13 +680,14 @@ int64_t VorbisState::PacketDuration(ogg_packet* aPacket)
 	if (aPacket->granulepos == -1) {
 		return -1;
 	}
+  // @fixme store these in a more stable place
   if (mVorbisPacketSamples.count(aPacket) == 0) {
   	// We haven't seen this packet, don't know its size?
   	return -1;
   }
 
   long samples = mVorbisPacketSamples[aPacket];
-	return Time(aPacket->granulepos - samples);
+	return Time(samples);
 }
 
 bool
