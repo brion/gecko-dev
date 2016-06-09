@@ -69,13 +69,13 @@ private:
   // read, false if the page read failed or end of file reached.
   bool ReadOggPage(ogg_page* aPage);
 
-	// Send a page off to the individual streams it belongs to.
-	// Reconstructed packets, if any are ready, will be available
-	// on the individual OggCodecStates.
+  // Send a page off to the individual streams it belongs to.
+  // Reconstructed packets, if any are ready, will be available
+  // on the individual OggCodecStates.
   nsresult DemuxOggPage(ogg_page* aPage);
 
-	// Read data and demux until a packet is available on the given stream state
-	void DemuxUntilPacketAvailable(OggCodecState *state);
+  // Read data and demux until a packet is available on the given stream state
+  void DemuxUntilPacketAvailable(OggCodecState *state);
 
   // Reads and decodes header packets for aState, until either header decode
   // fails, or is complete. Initializes the codec state before returning.
@@ -106,8 +106,8 @@ private:
   void SetupTargetSkeleton();
   void SetupMediaTracksInfo(const nsTArray<uint32_t>& aSerials);
 
-
-	ogg_uint32_t GetPageChecksum(ogg_page* page);
+  // Compute an ogg page's checksum
+  ogg_uint32_t GetPageChecksum(ogg_page* page);
 
   // Get the end time of aEndOffset. This is the playback position we'd reach
   // after playback finished at aEndOffset.
@@ -133,6 +133,7 @@ private:
   MediaInfo mInfo;
   nsTArray<RefPtr<OggTrackDemuxer>> mDemuxers;
 
+  // Map of codec-specific bitstream states.
   OggCodecStore mCodecStore;
 
   // Decode state of the Theora bitstream we're decoding, if we have video.
@@ -214,7 +215,7 @@ private:
   friend class OggDemuxer;
   ~OggTrackDemuxer();
   void SetNextKeyFrameTime();
-  RefPtr<MediaRawData> NextSample ();
+  RefPtr<MediaRawData> NextSample();
   RefPtr<OggDemuxer> mParent;
   TrackInfo::TrackType mType;
   UniquePtr<TrackInfo> mInfo;

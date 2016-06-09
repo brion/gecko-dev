@@ -717,8 +717,6 @@ OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
   //ogg_packet *pkt = DemuxUntilPacketAvailable(state);
   DemuxUntilPacketAvailable(state);
   return state->PacketOutAsMediaRawData();
-/*
-*/
 }
 
 void
