@@ -42,18 +42,6 @@ private:
 
   media::TimeIntervals GetBuffered();
 
-  // The number of microseconds of "fuzz" we use in a bisection search over
-  // HTTP. When we're seeking with fuzz, we'll stop the search if a bisection
-  // lands between the seek target and SEEK_FUZZ_USECS microseconds before the
-  // seek target.  This is becaue it's usually quicker to just keep downloading
-  // from an exisiting connection than to do another bisection inside that
-  // small range, which would open a new HTTP connetion.
-  static const uint32_t SEEK_FUZZ_USECS = 500000;
-
-  // The number of microseconds of "pre-roll" we use for Opus streams.
-  // The specification recommends 80 ms.
-  static const int64_t SEEK_OPUS_PREROLL = 80 * USECS_PER_MS;
-
   nsresult SeekInternal(const media::TimeUnit& aTarget);
 
   // Seeks to the keyframe preceding the target time using available
@@ -67,6 +55,81 @@ private:
 
   // Rolls back a seek-using-index attempt, returning a failure error code.
   IndexedSeekResult RollbackIndexedSeek(int64_t aOffset);
+
+  // Represents a section of contiguous media, with a start and end offset,
+  // and the timestamps of the start and end of that range, that is cached.
+  // Used to denote the extremities of a range in which we can seek quickly
+  // (because it's cached).
+  class SeekRange {
+  public:
+    SeekRange()
+      : mOffsetStart(0),
+        mOffsetEnd(0),
+        mTimeStart(0),
+        mTimeEnd(0)
+    {}
+
+    SeekRange(int64_t aOffsetStart,
+              int64_t aOffsetEnd,
+              int64_t aTimeStart,
+              int64_t aTimeEnd)
+      : mOffsetStart(aOffsetStart),
+        mOffsetEnd(aOffsetEnd),
+        mTimeStart(aTimeStart),
+        mTimeEnd(aTimeEnd)
+    {}
+
+    bool IsNull() const {
+      return mOffsetStart == 0 &&
+             mOffsetEnd == 0 &&
+             mTimeStart == 0 &&
+             mTimeEnd == 0;
+    }
+
+    int64_t mOffsetStart, mOffsetEnd; // in bytes.
+    int64_t mTimeStart, mTimeEnd; // in usecs.
+  };
+
+  nsresult GetSeekRanges(nsTArray<SeekRange>& aRanges);
+  SeekRange SelectSeekRange(const nsTArray<SeekRange>& ranges,
+                            int64_t aTarget,
+                            int64_t aStartTime,
+                            int64_t aEndTime,
+                            bool aExact);
+
+  // Seeks to aTarget usecs in the buffered range aRange using bisection search,
+  // or to the keyframe prior to aTarget if we have video. aAdjustedTarget is
+  // an adjusted version of the target used to account for Opus pre-roll, if
+  // necessary. aStartTime must be the presentation time at the start of media,
+  // and aEndTime the time at end of media. aRanges must be the time/byte ranges
+  // buffered in the media cache as per GetSeekRanges().
+  nsresult SeekInBufferedRange(int64_t aTarget,
+                               int64_t aAdjustedTarget,
+                               int64_t aStartTime,
+                               int64_t aEndTime,
+                               const nsTArray<SeekRange>& aRanges,
+                               const SeekRange& aRange);
+
+  // Seeks to before aTarget usecs in media using bisection search. If the media
+  // has video, this will seek to before the keyframe required to render the
+  // media at aTarget. Will use aRanges in order to narrow the bisection
+  // search space. aStartTime must be the presentation time at the start of
+  // media, and aEndTime the time at end of media. aRanges must be the time/byte
+  // ranges buffered in the media cache as per GetSeekRanges().
+  nsresult SeekInUnbuffered(int64_t aTarget,
+                            int64_t aStartTime,
+                            int64_t aEndTime,
+                            const nsTArray<SeekRange>& aRanges);
+
+  // Performs a seek bisection to move the media stream's read cursor to the
+  // last ogg page boundary which has end time before aTarget usecs on both the
+  // Theora and Vorbis bitstreams. Limits its search to data inside aRange;
+  // i.e. it will only read inside of the aRange's start and end offsets.
+  // aFuzz is the number of usecs of leniency we'll allow; we'll terminate the
+  // seek when we land in the range (aTime - aFuzz, aTime) usecs.
+  nsresult SeekBisection(int64_t aTarget,
+                         const SeekRange& aRange,
+                         uint32_t aFuzz);
 
   // Chunk size to read when reading Ogg files. Average Ogg page length
   // is about 4300 bytes, so we read the file in chunks larger than that.

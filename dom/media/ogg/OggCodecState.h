@@ -156,6 +156,11 @@ public:
   // OggCodecState::ReleasePacket(). The packet will have a valid granulepos.
   ogg_packet* PacketOut();
 
+  // Returns the next raw packet in the stream, or nullptr if there are no more
+  // packets buffered in the packet queue, without consuming it.
+  // The packet will have a valid granulepos.
+  ogg_packet* PacketPeek();
+
   // Releases the memory used by a cloned packet. Every packet returned by
   // PacketOut() must be free'd using this function.
   static void ReleasePacket(ogg_packet* aPacket);

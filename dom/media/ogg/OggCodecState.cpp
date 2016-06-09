@@ -191,6 +191,13 @@ ogg_packet* OggCodecState::PacketOut() {
   return mPackets.PopFront();
 }
 
+ogg_packet* OggCodecState::PacketPeek() {
+  if (mPackets.IsEmpty()) {
+    return nullptr;
+  }
+  return mPackets.PeekFront();
+}
+
 RefPtr<MediaRawData> OggCodecState::PacketOutAsMediaRawData()
 {
   ogg_packet *packet = PacketOut();

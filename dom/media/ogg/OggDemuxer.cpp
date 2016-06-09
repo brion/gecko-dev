@@ -23,7 +23,27 @@
 
 #define OGG_DEBUG(arg, ...) MOZ_LOG(gMediaDecoderLog, mozilla::LogLevel::Debug, ("OggDemuxer(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
+// Un-comment to enable logging of seek bisections.
+#define SEEK_LOGGING
+#ifdef SEEK_LOGGING
+#define SEEK_LOG(type, msg) MOZ_LOG(gMediaDecoderLog, type, msg)
+#else
+#define SEEK_LOG(type, msg)
+#endif
+
 namespace mozilla {
+
+// The number of microseconds of "fuzz" we use in a bisection search over
+// HTTP. When we're seeking with fuzz, we'll stop the search if a bisection
+// lands between the seek target and OGG_SEEK_FUZZ_USECS microseconds before the
+// seek target.  This is becaue it's usually quicker to just keep downloading
+// from an exisiting connection than to do another bisection inside that
+// small range, which would open a new HTTP connetion.
+static const uint32_t OGG_SEEK_FUZZ_USECS = 500000;
+
+// The number of microseconds of "pre-roll" we use for Opus streams.
+// The specification recommends 80 ms.
+static const int64_t OGG_SEEK_OPUS_PREROLL = 80 * USECS_PER_MS;
 
 using namespace gfx;
 
@@ -759,7 +779,7 @@ OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
   int64_t startTime = 0;
   int64_t endTime = mInfo.mMetadataDuration->ToMicroseconds();
   if (HasAudio() && mOpusState){
-    adjustedTarget = std::max(startTime, target - SEEK_OPUS_PREROLL);
+    adjustedTarget = std::max(startTime, target - OGG_SEEK_OPUS_PREROLL);
   }
 
   if (adjustedTarget == startTime) {
@@ -777,9 +797,6 @@ OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
     IndexedSeekResult sres = SeekToKeyframeUsingIndex(adjustedTarget);
     NS_ENSURE_TRUE(sres != SEEK_FATAL_ERROR, NS_ERROR_FAILURE);
     if (sres == SEEK_INDEX_FAIL) {
-      // @fixme finish the bisect seek
-      return NS_ERROR_NOT_IMPLEMENTED;
-      /*
       // No index or other non-fatal index-related failure. Try to seek
       // using a bisection search. Determine the already downloaded data
       // in the media cache, so we can try to seek in the cached data first.
@@ -788,21 +805,20 @@ OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
       NS_ENSURE_SUCCESS(res,res);
 
       // Figure out if the seek target lies in a buffered range.
-      SeekRange r = SelectSeekRange(ranges, aTarget, startTime, endTime, true);
+      SeekRange r = SelectSeekRange(ranges, target, startTime, endTime, true);
 
       if (!r.IsNull()) {
         // We know the buffered range in which the seek target lies, do a
         // bisection search in that buffered range.
-        res = SeekInBufferedRange(aTarget, adjustedTarget, startTime, endTime, ranges, r);
+        res = SeekInBufferedRange(target, adjustedTarget, startTime, endTime, ranges, r);
         NS_ENSURE_SUCCESS(res,res);
       } else {
         // The target doesn't lie in a buffered range. Perform a bisection
         // search over the whole media, using the known buffered ranges to
         // reduce the search space.
-        res = SeekInUnbuffered(aTarget, startTime, endTime, ranges);
+        res = SeekInUnbuffered(target, startTime, endTime, ranges);
         NS_ENSURE_SUCCESS(res,res);
       }
-      */
     }
   }
 
@@ -1274,6 +1290,416 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
   return endTime;
 }
 
+nsresult
+OggDemuxer::GetSeekRanges(nsTArray<SeekRange>& aRanges)
+{
+  AutoPinned<MediaResource> resource(mResource.GetResource());
+  MediaByteRangeSet cached;
+  nsresult res = resource->GetCachedRanges(cached);
+  NS_ENSURE_SUCCESS(res, res);
+
+  for (uint32_t index = 0; index < cached.Length(); index++) {
+    auto& range = cached[index];
+    int64_t startTime = -1;
+    int64_t endTime = -1;
+    if (NS_FAILED(Reset())) {
+      return NS_ERROR_FAILURE;
+    }
+    int64_t startOffset = range.mStart;
+    int64_t endOffset = range.mEnd;
+    startTime = RangeStartTime(startOffset);
+    if (startTime != -1 &&
+        ((endTime = RangeEndTime(endOffset)) != -1))
+    {
+      NS_WARN_IF_FALSE(startTime < endTime,
+                       "Start time must be before end time");
+      aRanges.AppendElement(SeekRange(startOffset,
+                                      endOffset,
+                                      startTime,
+                                      endTime));
+     }
+  }
+  if (NS_FAILED(Reset())) {
+    return NS_ERROR_FAILURE;
+  }
+  return NS_OK;
+}
+
+OggDemuxer::SeekRange
+OggDemuxer::SelectSeekRange(const nsTArray<SeekRange>& ranges,
+                            int64_t aTarget,
+                            int64_t aStartTime,
+                            int64_t aEndTime,
+                            bool aExact)
+{
+  int64_t so = 0;
+  int64_t eo = mResource.GetLength();
+  int64_t st = aStartTime;
+  int64_t et = aEndTime;
+  for (uint32_t i = 0; i < ranges.Length(); i++) {
+    const SeekRange &r = ranges[i];
+    if (r.mTimeStart < aTarget) {
+      so = r.mOffsetStart;
+      st = r.mTimeStart;
+    }
+    if (r.mTimeEnd >= aTarget && r.mTimeEnd < et) {
+      eo = r.mOffsetEnd;
+      et = r.mTimeEnd;
+    }
+
+    if (r.mTimeStart < aTarget && aTarget <= r.mTimeEnd) {
+      // Target lies exactly in this range.
+      return ranges[i];
+    }
+  }
+  if (aExact || eo == -1) {
+    return SeekRange();
+  }
+  return SeekRange(so, eo, st, et);
+}
+
+
+nsresult
+OggDemuxer::SeekInBufferedRange(int64_t aTarget,
+                                int64_t aAdjustedTarget,
+                                int64_t aStartTime,
+                                int64_t aEndTime,
+                                const nsTArray<SeekRange>& aRanges,
+                                const SeekRange& aRange)
+{
+  OGG_DEBUG("Seeking in buffered data to %lld using bisection search", aTarget);
+  if (HasVideo() || aAdjustedTarget >= aTarget) {
+    // We know the exact byte range in which the target must lie. It must
+    // be buffered in the media cache. Seek there.
+    nsresult res = SeekBisection(aTarget, aRange, 0);
+    if (NS_FAILED(res) || !HasVideo()) {
+      return res;
+    }
+
+    // We have an active Theora bitstream. Peek the next Theora frame, and
+    // extract its keyframe's time.
+    DemuxUntilPacketAvailable(mTheoraState);
+    ogg_packet* packet = mTheoraState->PacketPeek();
+    if (packet && !mTheoraState->IsKeyframe(packet)) {
+      // First post-seek frame isn't a keyframe, seek back to previous keyframe,
+      // otherwise we'll get visual artifacts.
+      NS_ASSERTION(packet->granulepos != -1, "Must have a granulepos");
+      int shift = mTheoraState->mInfo.keyframe_granule_shift;
+      int64_t keyframeGranulepos = (packet->granulepos >> shift) << shift;
+      int64_t keyframeTime = mTheoraState->StartTime(keyframeGranulepos);
+      int64_t frameTime = mTheoraState->StartTime(packet->granulepos);
+      SEEK_LOG(LogLevel::Debug, ("Keyframe for %lld is at %lld, seeking back to it",
+                              frameTime, keyframeTime));
+      aAdjustedTarget = std::min(aAdjustedTarget, keyframeTime);
+    }
+  }
+
+  nsresult res = NS_OK;
+  if (aAdjustedTarget < aTarget) {
+    SeekRange k = SelectSeekRange(aRanges,
+                                  aAdjustedTarget,
+                                  aStartTime,
+                                  aEndTime,
+                                  false);
+    res = SeekBisection(aAdjustedTarget, k, OGG_SEEK_FUZZ_USECS);
+  }
+  return res;
+}
+
+nsresult
+OggDemuxer::SeekInUnbuffered(int64_t aTarget,
+                             int64_t aStartTime,
+                             int64_t aEndTime,
+                             const nsTArray<SeekRange>& aRanges)
+{
+  OGG_DEBUG("Seeking in unbuffered data to %lld using bisection search", aTarget);
+
+  // If we've got an active Theora bitstream, determine the maximum possible
+  // time in usecs which a keyframe could be before a given interframe. We
+  // subtract this from our seek target, seek to the new target, and then
+  // will decode forward to the original seek target. We should encounter a
+  // keyframe in that interval. This prevents us from needing to run two
+  // bisections; one for the seek target frame, and another to find its
+  // keyframe. It's usually faster to just download this extra data, rather
+  // tham perform two bisections to find the seek target's keyframe. We
+  // don't do this offsetting when seeking in a buffered range,
+  // as the extra decoding causes a noticeable speed hit when all the data
+  // is buffered (compared to just doing a bisection to exactly find the
+  // keyframe).
+  int64_t keyframeOffsetMs = 0;
+  if (HasVideo() && mTheoraState) {
+    keyframeOffsetMs = mTheoraState->MaxKeyframeOffset();
+  }
+  // Add in the Opus pre-roll if necessary, as well.
+  if (HasAudio() && mOpusState) {
+    keyframeOffsetMs = std::max(keyframeOffsetMs, OGG_SEEK_OPUS_PREROLL);
+  }
+  int64_t seekTarget = std::max(aStartTime, aTarget - keyframeOffsetMs);
+  // Minimize the bisection search space using the known timestamps from the
+  // buffered ranges.
+  SeekRange k = SelectSeekRange(aRanges, seekTarget, aStartTime, aEndTime, false);
+  return SeekBisection(seekTarget, k, OGG_SEEK_FUZZ_USECS);
+}
+
+nsresult
+OggDemuxer::SeekBisection(int64_t aTarget,
+                          const SeekRange& aRange,
+                          uint32_t aFuzz)
+{
+  nsresult res;
+
+  if (aTarget == aRange.mTimeStart) {
+    if (NS_FAILED(Reset())) {
+      return NS_ERROR_FAILURE;
+    }
+    res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, 0);
+    NS_ENSURE_SUCCESS(res,res);
+    return NS_OK;
+  }
+
+  // Bisection search, find start offset of last page with end time less than
+  // the seek target.
+  ogg_int64_t startOffset = aRange.mOffsetStart;
+  ogg_int64_t startTime = aRange.mTimeStart;
+  ogg_int64_t startLength = 0; // Length of the page at startOffset.
+  ogg_int64_t endOffset = aRange.mOffsetEnd;
+  ogg_int64_t endTime = aRange.mTimeEnd;
+
+  ogg_int64_t seekTarget = aTarget;
+  int64_t seekLowerBound = std::max(static_cast<int64_t>(0), aTarget - aFuzz);
+  int hops = 0;
+  DebugOnly<ogg_int64_t> previousGuess = -1;
+  int backsteps = 0;
+  const int maxBackStep = 10;
+  NS_ASSERTION(static_cast<uint64_t>(PAGE_STEP) * pow(2.0, maxBackStep) < INT32_MAX,
+               "Backstep calculation must not overflow");
+
+  // Seek via bisection search. Loop until we find the offset where the page
+  // before the offset is before the seek target, and the page after the offset
+  // is after the seek target.
+  while (true) {
+    ogg_int64_t duration = 0;
+    double target = 0;
+    ogg_int64_t interval = 0;
+    ogg_int64_t guess = 0;
+    ogg_page page;
+    int skippedBytes = 0;
+    ogg_int64_t pageOffset = 0;
+    ogg_int64_t pageLength = 0;
+    ogg_int64_t granuleTime = -1;
+    bool mustBackoff = false;
+
+    // Guess where we should bisect to, based on the bit rate and the time
+    // remaining in the interval. Loop until we can determine the time at
+    // the guess offset.
+    while (true) {
+
+      // Discard any previously buffered packets/pages.
+      if (NS_FAILED(Reset())) {
+        return NS_ERROR_FAILURE;
+      }
+
+      interval = endOffset - startOffset - startLength;
+      if (interval == 0) {
+        // Our interval is empty, we've found the optimal seek point, as the
+        // page at the start offset is before the seek target, and the page
+        // at the end offset is after the seek target.
+        SEEK_LOG(LogLevel::Debug, ("Interval narrowed, terminating bisection."));
+        break;
+      }
+
+      // Guess bisection point.
+      duration = endTime - startTime;
+      target = (double)(seekTarget - startTime) / (double)duration;
+      guess = startOffset + startLength +
+              static_cast<ogg_int64_t>((double)interval * target);
+      guess = std::min(guess, endOffset - PAGE_STEP);
+      if (mustBackoff) {
+        // We previously failed to determine the time at the guess offset,
+        // probably because we ran out of data to decode. This usually happens
+        // when we guess very close to the end offset. So reduce the guess
+        // offset using an exponential backoff until we determine the time.
+        SEEK_LOG(LogLevel::Debug, ("Backing off %d bytes, backsteps=%d",
+          static_cast<int32_t>(PAGE_STEP * pow(2.0, backsteps)), backsteps));
+        guess -= PAGE_STEP * static_cast<ogg_int64_t>(pow(2.0, backsteps));
+
+        if (guess <= startOffset) {
+          // We've tried to backoff to before the start offset of our seek
+          // range. This means we couldn't find a seek termination position
+          // near the end of the seek range, so just set the seek termination
+          // condition, and break out of the bisection loop. We'll begin
+          // decoding from the start of the seek range.
+          interval = 0;
+          break;
+        }
+
+        backsteps = std::min(backsteps + 1, maxBackStep);
+        // We reset mustBackoff. If we still need to backoff further, it will
+        // be set to true again.
+        mustBackoff = false;
+      } else {
+        backsteps = 0;
+      }
+      guess = std::max(guess, startOffset + startLength);
+
+      SEEK_LOG(LogLevel::Debug, ("Seek loop start[o=%lld..%lld t=%lld] "
+                              "end[o=%lld t=%lld] "
+                              "interval=%lld target=%lf guess=%lld",
+                              startOffset, (startOffset+startLength), startTime,
+                              endOffset, endTime, interval, target, guess));
+
+      NS_ASSERTION(guess >= startOffset + startLength, "Guess must be after range start");
+      NS_ASSERTION(guess < endOffset, "Guess must be before range end");
+      NS_ASSERTION(guess != previousGuess, "Guess should be different to previous");
+      previousGuess = guess;
+
+      hops++;
+
+      // Locate the next page after our seek guess, and then figure out the
+      // granule time of the audio and video bitstreams there. We can then
+      // make a bisection decision based on our location in the media.
+      PageSyncResult pageSyncResult = PageSync(&mResource,
+                                               &mOggState,
+                                               false,
+                                               guess,
+                                               endOffset,
+                                               &page,
+                                               skippedBytes);
+      NS_ENSURE_TRUE(pageSyncResult != PAGE_SYNC_ERROR, NS_ERROR_FAILURE);
+
+      if (pageSyncResult == PAGE_SYNC_END_OF_RANGE) {
+        // Our guess was too close to the end, we've ended up reading the end
+        // page. Backoff exponentially from the end point, in case the last
+        // page/frame/sample is huge.
+        mustBackoff = true;
+        SEEK_LOG(LogLevel::Debug, ("Hit the end of range, backing off"));
+        continue;
+      }
+
+      // We've located a page of length |ret| at |guess + skippedBytes|.
+      // Remember where the page is located.
+      pageOffset = guess + skippedBytes;
+      pageLength = page.header_len + page.body_len;
+
+      // Read pages until we can determine the granule time of the audio and
+      // video bitstream.
+      ogg_int64_t audioTime = -1;
+      ogg_int64_t videoTime = -1;
+      do {
+        // Add the page to its codec state, determine its granule time.
+        uint32_t serial = ogg_page_serialno(&page);
+        OggCodecState* codecState = mCodecStore.Get(serial);
+        if (codecState && codecState->mActive) {
+          int ret = ogg_stream_pagein(&codecState->mState, &page);
+          NS_ENSURE_TRUE(ret == 0, NS_ERROR_FAILURE);
+        }
+
+        ogg_int64_t granulepos = ogg_page_granulepos(&page);
+
+        if (HasAudio() && granulepos > 0 && audioTime == -1) {
+          if (mVorbisState && serial == mVorbisState->mSerial) {
+            audioTime = mVorbisState->Time(granulepos);
+          } else if (mOpusState && serial == mOpusState->mSerial) {
+            audioTime = mOpusState->Time(granulepos);
+          }
+        }
+
+        if (HasVideo() &&
+            granulepos > 0 &&
+            serial == mTheoraState->mSerial &&
+            videoTime == -1) {
+          videoTime = mTheoraState->Time(granulepos);
+        }
+
+        if (pageOffset + pageLength >= endOffset) {
+          // Hit end of readable data.
+          break;
+        }
+
+        if (!ReadOggPage(&page)) {
+          break;
+        }
+
+      } while ((HasAudio() && audioTime == -1) ||
+               (HasVideo() && videoTime == -1));
+
+
+      if ((HasAudio() && audioTime == -1) ||
+          (HasVideo() && videoTime == -1))
+      {
+        // We don't have timestamps for all active tracks...
+        if (pageOffset == startOffset + startLength &&
+            pageOffset + pageLength >= endOffset) {
+          // We read the entire interval without finding timestamps for all
+          // active tracks. We know the interval start offset is before the seek
+          // target, and the interval end is after the seek target, and we can't
+          // terminate inside the interval, so we terminate the seek at the
+          // start of the interval.
+          interval = 0;
+          break;
+        }
+
+        // We should backoff; cause the guess to back off from the end, so
+        // that we've got more room to capture.
+        mustBackoff = true;
+        continue;
+      }
+
+      // We've found appropriate time stamps here. Proceed to bisect
+      // the search space.
+      granuleTime = std::max(audioTime, videoTime);
+      NS_ASSERTION(granuleTime > 0, "Must get a granuletime");
+      break;
+    } // End of "until we determine time at guess offset" loop.
+
+    if (interval == 0) {
+      // Seek termination condition; we've found the page boundary of the
+      // last page before the target, and the first page after the target.
+      SEEK_LOG(LogLevel::Debug, ("Terminating seek at offset=%lld", startOffset));
+      NS_ASSERTION(startTime < aTarget, "Start time must always be less than target");
+      res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, startOffset);
+      NS_ENSURE_SUCCESS(res,res);
+      if (NS_FAILED(Reset())) {
+        return NS_ERROR_FAILURE;
+      }
+      break;
+    }
+
+    SEEK_LOG(LogLevel::Debug, ("Time at offset %lld is %lld", guess, granuleTime));
+    if (granuleTime < seekTarget && granuleTime > seekLowerBound) {
+      // We're within the fuzzy region in which we want to terminate the search.
+      res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, pageOffset);
+      NS_ENSURE_SUCCESS(res,res);
+      if (NS_FAILED(Reset())) {
+        return NS_ERROR_FAILURE;
+      }
+      SEEK_LOG(LogLevel::Debug, ("Terminating seek at offset=%lld", pageOffset));
+      break;
+    }
+
+    if (granuleTime >= seekTarget) {
+      // We've landed after the seek target.
+      NS_ASSERTION(pageOffset < endOffset, "offset_end must decrease");
+      endOffset = pageOffset;
+      endTime = granuleTime;
+    } else if (granuleTime < seekTarget) {
+      // Landed before seek target.
+      NS_ASSERTION(pageOffset >= startOffset + startLength,
+        "Bisection point should be at or after end of first page in interval");
+      startOffset = pageOffset;
+      startLength = pageLength;
+      startTime = granuleTime;
+    }
+    NS_ASSERTION(startTime < seekTarget, "Must be before seek target");
+    NS_ASSERTION(endTime >= seekTarget, "End must be after seek target");
+  }
+
+  SEEK_LOG(LogLevel::Debug, ("Seek complete in %d bisections.", hops));
+
+  return NS_OK;
+}
+
+
 OggHeaders::OggHeaders()
 {
   // no-op
@@ -1291,4 +1717,5 @@ OggHeaders::AppendPacket(const ogg_packet *aPacket)
 }
 
 #undef OGG_DEBUG
+#undef SEEK_DEBUG
 } // namespace mozilla
