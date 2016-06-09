@@ -14,6 +14,7 @@
 namespace mozilla {
 
 class OggTrackDemuxer;
+class OggHeaders;
 
 class OggDemuxer : public MediaDataDemuxer
 {
@@ -81,7 +82,7 @@ private:
   // fails, or is complete. Initializes the codec state before returning.
   // Returns true if reading headers and initializtion of the stream
   // succeeds.
-  bool ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpecificConfig);
+  bool ReadHeaders(OggCodecState* aState, OggHeaders &aHeaders);
 
   // Reads the next link in the chain.
   bool ReadOggChain();
@@ -100,9 +101,9 @@ private:
   void BuildSerialList(nsTArray<uint32_t>& aTracks);
 
   // Setup target bitstreams for decoding.
-  void SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer> headers);
-  void SetupTargetVorbis(VorbisState *aVorbisState, RefPtr<MediaByteBuffer> headers);
-  void SetupTargetOpus(OpusState *aOpusState);
+  void SetupTargetTheora(TheoraState *aTheoraState, OggHeaders &aHeaders);
+  void SetupTargetVorbis(VorbisState *aVorbisState, OggHeaders &aHeaders);
+  void SetupTargetOpus(OpusState *aOpusState, OggHeaders &aHeaders);
   void SetupTargetSkeleton();
   void SetupMediaTracksInfo(const nsTArray<uint32_t>& aSerials);
 
@@ -222,6 +223,15 @@ private:
 
   // Queued sample extracted by the demuxer, but not yet returned.
   RefPtr<MediaRawData> mQueuedSample;
+};
+
+class OggHeaders {
+public:
+  nsTArray<const unsigned char*> mHeaders;
+  nsTArray<size_t> mHeaderLens;
+
+  OggHeaders();
+  void AppendPacket(const ogg_packet *aPacket);
 };
 
 } // namespace mozilla

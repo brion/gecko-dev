@@ -244,10 +244,8 @@ OggDemuxer::Cleanup()
 }
 
 bool
-OggDemuxer::ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpecificConfig)
+OggDemuxer::ReadHeaders(OggCodecState* aState, OggHeaders &aHeaders)
 {
-  nsTArray<const unsigned char*> headers;
-  nsTArray<size_t> headerLens;
   while (!aState->DoneReadingHeaders()) {
     DemuxUntilPacketAvailable(aState);
     ogg_packet* packet = aState->PacketOut();
@@ -257,17 +255,9 @@ OggDemuxer::ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpe
       return false;
     }
 
-    if (aCodecSpecificConfig) {
-      // Save a copy of the header packet for the decoder to use later;
-      // OggCodecState::DecodeHeader will free it when processing locally.
-      size_t packetSize = packet->bytes;
-      unsigned char *packetData = static_cast<unsigned char *>(malloc(packetSize));
-      MOZ_ASSERT(packetData != nullptr, "Could not duplicate ogg header packet");
-      memcpy(packetData, packet->packet, packetSize);
-
-      headers.AppendElement(packetData);
-      headerLens.AppendElement(packetSize);
-    }
+    // Save a copy of the header packet for the decoder to use later;
+    // OggCodecState::DecodeHeader will free it when processing locally.
+    aHeaders.AppendPacket(packet);
 
     // Local OggCodecState needs to decode headers in order to process
     // packet granulepos -> time mappings, etc.
@@ -276,9 +266,6 @@ OggDemuxer::ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpe
       aState->Deactivate();
       return false;
     }
-  }
-  if (!XiphHeadersToExtradata(aCodecSpecificConfig, headers, headerLens)) {
-    return false;
   }
   return aState->Init();
 }
@@ -300,7 +287,7 @@ OggDemuxer::BuildSerialList(nsTArray<uint32_t>& aTracks)
 }
 
 void
-OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer> headers)
+OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, OggHeaders &aHeaders)
 {
   if (mTheoraState) {
     mTheoraState->Reset();
@@ -332,7 +319,10 @@ OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer>
     memcpy(&mTheoraInfo, &aTheoraState->mInfo, sizeof(mTheoraInfo));
 
     // Save header packets for the decoder
-    mInfo.mVideo.mCodecSpecificConfig = headers;
+    if (!XiphHeadersToExtradata(mInfo.mVideo.mCodecSpecificConfig,
+                                aHeaders.mHeaders, aHeaders.mHeaderLens)) {
+      return;
+    }
 
     mTheoraState = aTheoraState;
     mTheoraSerial = aTheoraState->mSerial;
@@ -340,7 +330,7 @@ OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer>
 }
 
 void
-OggDemuxer::SetupTargetVorbis(VorbisState *aVorbisState, RefPtr<MediaByteBuffer> headers)
+OggDemuxer::SetupTargetVorbis(VorbisState *aVorbisState, OggHeaders &aHeaders)
 {
   if (mVorbisState) {
     mVorbisState->Reset();
@@ -355,14 +345,17 @@ OggDemuxer::SetupTargetVorbis(VorbisState *aVorbisState, RefPtr<MediaByteBuffer>
   mInfo.mAudio.mChannels = aVorbisState->mInfo.channels;
 
   // Save header packets for the decoder
-  mInfo.mAudio.mCodecSpecificConfig = headers;
+  if (!XiphHeadersToExtradata(mInfo.mAudio.mCodecSpecificConfig,
+                              aHeaders.mHeaders, aHeaders.mHeaderLens)) {
+    return;
+  }
 
   mVorbisState = aVorbisState;
   mVorbisSerial = aVorbisState->mSerial;
 }
 
 void
-OggDemuxer::SetupTargetOpus(OpusState *aOpusState)
+OggDemuxer::SetupTargetOpus(OpusState *aOpusState, OggHeaders &aHeaders)
 {
   if (mOpusState) {
     mOpusState->Reset();
@@ -372,9 +365,13 @@ OggDemuxer::SetupTargetOpus(OpusState *aOpusState)
   mInfo.mAudio.mRate = aOpusState->mRate;
   mInfo.mAudio.mChannels = aOpusState->mChannels;
 
-  uint8_t c[sizeof(uint64_t)];
-  BigEndian::writeUint64(&c[0], aOpusState->mPreSkip);
-  mInfo.mAudio.mCodecSpecificConfig->AppendElements(&c[0], sizeof(uint64_t));
+  // Save preskip & the first header packet for the Opus decoder
+  uint64_t preSkip = aOpusState->Time(0, aOpusState->mPreSkip);
+  uint8_t c[sizeof(preSkip)];
+  BigEndian::writeUint64(&c[0], preSkip);
+  mInfo.mAudio.mCodecSpecificConfig->AppendElements(&c[0], sizeof(preSkip));
+  mInfo.mAudio.mCodecSpecificConfig->AppendElements(aHeaders.mHeaders[0],
+                                                    aHeaders.mHeaderLens[0]);
 
   mOpusState = aOpusState;
   mOpusSerial = aOpusState->mSerial;
@@ -386,12 +383,13 @@ OggDemuxer::SetupTargetSkeleton()
   // Setup skeleton related information after mVorbisState & mTheroState
   // being set (if they exist).
   if (mSkeletonState) {
+    OggHeaders headers;
     if (!HasAudio() && !HasVideo()) {
       // We have a skeleton track, but no audio or video, may as well disable
       // the skeleton, we can't do anything useful with this media.
       OGG_DEBUG("Deactivating skeleton stream %ld", mSkeletonState->mSerial);
       mSkeletonState->Deactivate();
-    } else if (ReadHeaders(mSkeletonState, nullptr) && mSkeletonState->HasIndex()) {
+    } else if (ReadHeaders(mSkeletonState, headers) && mSkeletonState->HasIndex()) {
       // Extract the duration info out of the index, so we don't need to seek to
       // the end of resource to get it.
       nsTArray<uint32_t> tracks;
@@ -533,7 +531,7 @@ OggDemuxer::ReadMetadata()
   for (uint32_t i = 0; i < bitstreams.Length(); ++i) {
     OggCodecState* s = bitstreams[i];
     if (s) {
-      RefPtr<MediaByteBuffer> headers(new MediaByteBuffer);
+      OggHeaders headers;
       if (s->GetType() == OggCodecState::TYPE_THEORA && ReadHeaders(s, headers)) {
         if (!mTheoraState) {
           TheoraState* theoraState = static_cast<TheoraState*>(s);
@@ -552,7 +550,7 @@ OggDemuxer::ReadMetadata()
         if (mOpusEnabled) {
           if (!mOpusState) {
             OpusState* opusState = static_cast<OpusState*>(s);
-            SetupTargetOpus(opusState);
+            SetupTargetOpus(opusState, headers);
           } else {
             s->Deactivate();
           }
@@ -1080,6 +1078,21 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
   return endTime;
 }
 
+OggHeaders::OggHeaders()
+{
+  // no-op
+}
+
+void
+OggHeaders::AppendPacket(const ogg_packet *aPacket)
+{
+  size_t packetSize = aPacket->bytes;
+  unsigned char *packetData = static_cast<unsigned char *>(malloc(packetSize));
+  MOZ_ASSERT(packetData != nullptr, "Could not duplicate ogg header packet");
+  memcpy(packetData, aPacket->packet, packetSize);
+  mHeaders.AppendElement(packetData);
+  mHeaderLens.AppendElement(packetSize);
+}
 
 #undef OGG_DEBUG
 } // namespace mozilla
