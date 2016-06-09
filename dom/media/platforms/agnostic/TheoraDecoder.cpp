@@ -44,6 +44,7 @@ TheoraDecoder::TheoraDecoder(const VideoInfo& aConfig,
   : mImageContainer(aImageContainer)
   , mTaskQueue(aTaskQueue)
   , mCallback(aCallback)
+  , mIsFlushing(false)
   , mInfo(aConfig)
 {
   MOZ_COUNT_CTOR(TheoraDecoder);
@@ -75,20 +76,21 @@ TheoraDecoder::Init()
   th_comment_init(&mTheoraComment);
   th_info_init(&mTheoraInfo);
 
+  if (mInfo.mCodecSpecificConfig->Length() != 3) {
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+  }
   nsTArray<unsigned char*> headers;
   nsTArray<size_t> headerLens;
   if (!XiphExtradataToHeaders(headers, headerLens,
-	mInfo.mCodecSpecificConfig->Elements(),
-	mInfo.mCodecSpecificConfig->Length())) {
-	return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+      mInfo.mCodecSpecificConfig->Elements(),
+      mInfo.mCodecSpecificConfig->Length())) {
+      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
   }
   for (size_t i = 0; i < headers.Length(); i++) {
-    if (NS_FAILED(DecodeHeader(headers[i], headerLens[i]))) {
+    if (NS_FAILED(DoDecodeHeader(headers[i], headerLens[i]))) {
       return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
     }
   }
-
-  MOZ_ASSERT(mPacketCount == 3);
 
   mTheoraDecoderContext = th_decode_alloc(&mTheoraInfo, mTheoraSetupInfo);
   if (mTheoraDecoderContext) {
@@ -102,11 +104,18 @@ TheoraDecoder::Init()
 nsresult
 TheoraDecoder::Flush()
 {
+  MOZ_ASSERT(mCallback->OnReaderTaskQueue());
+  mIsFlushing = true;
+  nsCOMPtr<nsIRunnable> r = NS_NewRunnableFunction([this] () {
+    // nothing to do for now.
+  });
+  SyncRunnable::DispatchToThread(mTaskQueue, r);
+  mIsFlushing = false;
   return NS_OK;
 }
 
 nsresult
-TheoraDecoder::DecodeHeader(const unsigned char* aData, size_t aLength)
+TheoraDecoder::DoDecodeHeader(const unsigned char* aData, size_t aLength)
 {
   bool bos = mPacketCount == 0;
   ogg_packet pkt = InitTheoraPacket(aData, aLength, bos, false, 0, mPacketCount++);
@@ -119,11 +128,9 @@ TheoraDecoder::DecodeHeader(const unsigned char* aData, size_t aLength)
 }
 
 int
-TheoraDecoder::ProcessDecodeFrame(MediaRawData* aSample)
+TheoraDecoder::DoDecode(MediaRawData* aSample)
 {
-#if defined(DEBUG)
-  // ...
-#endif
+  MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
 
   const unsigned char* aData = aSample->Data();
   size_t aLength = aSample->Size();
@@ -164,14 +171,14 @@ TheoraDecoder::ProcessDecodeFrame(MediaRawData* aSample)
     VideoInfo info;
     info.mDisplay = mInfo.mDisplay;
     RefPtr<VideoData> v = VideoData::Create(info,
-                                              mImageContainer,
-                                              aSample->mOffset,
-                                              aSample->mTime,
-                                              aSample->mDuration,
-                                              b,
-                                              aSample->mKeyframe,
-                                              aSample->mTimecode,
-                                              pictureArea);
+                                            mImageContainer,
+                                            aSample->mOffset,
+                                            aSample->mTime,
+                                            aSample->mDuration,
+                                            b,
+                                            aSample->mKeyframe,
+                                            aSample->mTimecode,
+                                            pictureArea);
 
     if (!v) {
       LOG("Image allocation error source %ldx%ld display %ldx%ld picture %ldx%ld",
@@ -188,9 +195,13 @@ TheoraDecoder::ProcessDecodeFrame(MediaRawData* aSample)
 }
 
 void
-TheoraDecoder::DecodeFrame(MediaRawData* aSample)
+TheoraDecoder::ProcessDecode(MediaRawData* aSample)
 {
-  if (ProcessDecodeFrame(aSample) == -1) {
+  MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  if (mIsFlushing) {
+    return;
+  }
+  if (DoDecode(aSample) == -1) {
     mCallback->Error(MediaDataDecoderError::DECODE_ERROR);
   } else if (mTaskQueue->IsEmpty()) {
     mCallback->InputExhausted();
@@ -200,11 +211,9 @@ TheoraDecoder::DecodeFrame(MediaRawData* aSample)
 nsresult
 TheoraDecoder::Input(MediaRawData* aSample)
 {
-  nsCOMPtr<nsIRunnable> runnable(
-    NewRunnableMethod<RefPtr<MediaRawData>>(
-      this, &TheoraDecoder::DecodeFrame,
-      RefPtr<MediaRawData>(aSample)));
-  mTaskQueue->Dispatch(runnable.forget());
+  MOZ_ASSERT(mCallback->OnReaderTaskQueue());
+  mTaskQueue->Dispatch(NewRunnableMethod<RefPtr<MediaRawData>>(
+                       this, &TheoraDecoder::ProcessDecode, aSample));
 
   return NS_OK;
 }
@@ -212,15 +221,15 @@ TheoraDecoder::Input(MediaRawData* aSample)
 void
 TheoraDecoder::ProcessDrain()
 {
+  MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
   mCallback->DrainComplete();
 }
 
 nsresult
 TheoraDecoder::Drain()
 {
-  nsCOMPtr<nsIRunnable> runnable(
-    NewRunnableMethod(this, &TheoraDecoder::ProcessDrain));
-  mTaskQueue->Dispatch(runnable.forget());
+  MOZ_ASSERT(mCallback->OnReaderTaskQueue());
+  mTaskQueue->Dispatch(NewRunnableMethod(this, &TheoraDecoder::ProcessDrain));
 
   return NS_OK;
 }

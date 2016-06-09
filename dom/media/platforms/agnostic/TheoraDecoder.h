@@ -41,15 +41,16 @@ public:
   }
 
 private:
-  nsresult DecodeHeader(const unsigned char* aData, size_t aLength);
+  nsresult DoDecodeHeader(const unsigned char* aData, size_t aLength);
 
-  void DecodeFrame(MediaRawData* aSample);
-  int ProcessDecodeFrame(MediaRawData* aSample);
+  void ProcessDecode(MediaRawData* aSample);
+  int DoDecode(MediaRawData* aSample);
   void ProcessDrain();
 
   RefPtr<ImageContainer> mImageContainer;
   RefPtr<TaskQueue> mTaskQueue;
   MediaDataDecoderCallback* mCallback;
+  Atomic<bool> mIsFlushing;
 
   // Theora header & decoder state
   th_info mTheoraInfo;
