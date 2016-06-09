@@ -24,7 +24,7 @@
 #define OGG_DEBUG(arg, ...) MOZ_LOG(gMediaDecoderLog, mozilla::LogLevel::Debug, ("OggDemuxer(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
 // Un-comment to enable logging of seek bisections.
-#define SEEK_LOGGING
+//#define SEEK_LOGGING
 #ifdef SEEK_LOGGING
 #define SEEK_LOG(type, msg) MOZ_LOG(gMediaDecoderLog, type, msg)
 #else
