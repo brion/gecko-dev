@@ -76,9 +76,6 @@ TheoraDecoder::Init()
   th_comment_init(&mTheoraComment);
   th_info_init(&mTheoraInfo);
 
-  if (mInfo.mCodecSpecificConfig->Length() != 3) {
-    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-  }
   nsTArray<unsigned char*> headers;
   nsTArray<size_t> headerLens;
   if (!XiphExtradataToHeaders(headers, headerLens,
@@ -90,6 +87,9 @@ TheoraDecoder::Init()
     if (NS_FAILED(DoDecodeHeader(headers[i], headerLens[i]))) {
       return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
     }
+  }
+  if (mPacketCount != 3) {
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
   }
 
   mTheoraDecoderContext = th_decode_alloc(&mTheoraInfo, mTheoraSetupInfo);
