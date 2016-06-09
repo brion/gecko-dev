@@ -751,17 +751,212 @@ OggDemuxer::GetBuffered()
 nsresult
 OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
 {
-  return NS_ERROR_NOT_IMPLEMENTED; // @fixme
+  int64_t target = aTarget.ToMicroseconds();
+  OGG_DEBUG("About to seek to %lld", target);
+  nsresult res;
+  int64_t adjustedTarget = target;
+  int64_t startTime = 0;
+  int64_t endTime = mInfo.mMetadataDuration->ToMicroseconds();
+  if (HasAudio() && mOpusState){
+    adjustedTarget = std::max(startTime, target - SEEK_OPUS_PREROLL);
+  }
+
+  if (adjustedTarget == startTime) {
+    // We've seeked to the media start. Just seek to the offset of the first
+    // content page.
+    res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, 0);
+    NS_ENSURE_SUCCESS(res,res);
+
+    res = Reset();
+    NS_ENSURE_SUCCESS(res,res);
+  } else {
+    // TODO: This may seek back unnecessarily far in the video, but we don't
+    // have a way of asking Skeleton to seek to a different target for each
+    // stream yet. Using adjustedTarget here is at least correct, if slow.
+    IndexedSeekResult sres = SeekToKeyframeUsingIndex(adjustedTarget);
+    NS_ENSURE_TRUE(sres != SEEK_FATAL_ERROR, NS_ERROR_FAILURE);
+    if (sres == SEEK_INDEX_FAIL) {
+      // @fixme finish the bisect seek
+      return NS_ERROR_NOT_IMPLEMENTED;
+      /*
+      // No index or other non-fatal index-related failure. Try to seek
+      // using a bisection search. Determine the already downloaded data
+      // in the media cache, so we can try to seek in the cached data first.
+      AutoTArray<SeekRange, 16> ranges;
+      res = GetSeekRanges(ranges);
+      NS_ENSURE_SUCCESS(res,res);
+
+      // Figure out if the seek target lies in a buffered range.
+      SeekRange r = SelectSeekRange(ranges, aTarget, startTime, endTime, true);
+
+      if (!r.IsNull()) {
+        // We know the buffered range in which the seek target lies, do a
+        // bisection search in that buffered range.
+        res = SeekInBufferedRange(aTarget, adjustedTarget, startTime, endTime, ranges, r);
+        NS_ENSURE_SUCCESS(res,res);
+      } else {
+        // The target doesn't lie in a buffered range. Perform a bisection
+        // search over the whole media, using the known buffered ranges to
+        // reduce the search space.
+        res = SeekInUnbuffered(aTarget, startTime, endTime, ranges);
+        NS_ENSURE_SUCCESS(res,res);
+      }
+      */
+    }
+  }
+
+  return NS_OK;
 }
 
-bool
-OggDemuxer::GetOffsetForTime(uint64_t aTime, int64_t* aOffset)
+OggDemuxer::IndexedSeekResult
+OggDemuxer::RollbackIndexedSeek(int64_t aOffset)
 {
-  //EnsureUpToDateIndex();
-  //return mBufferedState && mBufferedState->GetOffsetForTime(aTime, aOffset);
-  return false; // @fixme
+  if (mSkeletonState) {
+    mSkeletonState->Deactivate();
+  }
+  nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, aOffset);
+  NS_ENSURE_SUCCESS(res, SEEK_FATAL_ERROR);
+  return SEEK_INDEX_FAIL;
 }
 
+OggDemuxer::IndexedSeekResult
+OggDemuxer::SeekToKeyframeUsingIndex(int64_t aTarget)
+{
+  if (!HasSkeleton() || !mSkeletonState->HasIndex()) {
+    return SEEK_INDEX_FAIL;
+  }
+  // We have an index from the Skeleton track, try to use it to seek.
+  AutoTArray<uint32_t, 2> tracks;
+  BuildSerialList(tracks);
+  SkeletonState::nsSeekTarget keyframe;
+  if (NS_FAILED(mSkeletonState->IndexedSeekTarget(aTarget,
+                                                  tracks,
+                                                  keyframe)))
+  {
+    // Could not locate a keypoint for the target in the index.
+    return SEEK_INDEX_FAIL;
+  }
+
+  // Remember original resource read cursor position so we can rollback on failure.
+  int64_t tell = mResource.Tell();
+
+  // Seek to the keypoint returned by the index.
+  if (keyframe.mKeyPoint.mOffset > mResource.GetLength() ||
+      keyframe.mKeyPoint.mOffset < 0)
+  {
+    // Index must be invalid.
+    return RollbackIndexedSeek(tell);
+  }
+  LOG(LogLevel::Debug, ("Seeking using index to keyframe at offset %lld\n",
+                     keyframe.mKeyPoint.mOffset));
+  nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET,
+                                keyframe.mKeyPoint.mOffset);
+  NS_ENSURE_SUCCESS(res, SEEK_FATAL_ERROR);
+
+  // We've moved the read set, so reset decode.
+  res = Reset();
+  NS_ENSURE_SUCCESS(res, SEEK_FATAL_ERROR);
+
+  // Check that the page the index thinks is exactly here is actually exactly
+  // here. If not, the index is invalid.
+  ogg_page page;
+  int skippedBytes = 0;
+  PageSyncResult syncres = PageSync(&mResource,
+                                    &mOggState,
+                                    false,
+                                    keyframe.mKeyPoint.mOffset,
+                                    mResource.GetLength(),
+                                    &page,
+                                    skippedBytes);
+  NS_ENSURE_TRUE(syncres != PAGE_SYNC_ERROR, SEEK_FATAL_ERROR);
+  if (syncres != PAGE_SYNC_OK || skippedBytes != 0) {
+    LOG(LogLevel::Debug, ("Indexed-seek failure: Ogg Skeleton Index is invalid "
+                       "or sync error after seek"));
+    return RollbackIndexedSeek(tell);
+  }
+  uint32_t serial = ogg_page_serialno(&page);
+  if (serial != keyframe.mSerial) {
+    // Serialno of page at offset isn't what the index told us to expect.
+    // Assume the index is invalid.
+    return RollbackIndexedSeek(tell);
+  }
+  OggCodecState* codecState = mCodecStore.Get(serial);
+  if (codecState &&
+      codecState->mActive &&
+      ogg_stream_pagein(&codecState->mState, &page) != 0)
+  {
+    // Couldn't insert page into the ogg resource, or somehow the resource
+    // is no longer active.
+    return RollbackIndexedSeek(tell);
+  }
+  return SEEK_OK;
+}
+
+// Reads a page from the media resource.
+OggDemuxer::PageSyncResult
+OggDemuxer::PageSync(MediaResourceIndex* aResource,
+                     ogg_sync_state* aState,
+                     bool aCachedDataOnly,
+                     int64_t aOffset,
+                     int64_t aEndOffset,
+                     ogg_page* aPage,
+                     int& aSkippedBytes)
+{
+  aSkippedBytes = 0;
+  // Sync to the next page.
+  int ret = 0;
+  uint32_t bytesRead = 0;
+  int64_t readHead = aOffset;
+  while (ret <= 0) {
+    ret = ogg_sync_pageseek(aState, aPage);
+    if (ret == 0) {
+      char* buffer = ogg_sync_buffer(aState, PAGE_STEP);
+      NS_ASSERTION(buffer, "Must have a buffer");
+
+      // Read from the file into the buffer
+      int64_t bytesToRead = std::min(static_cast<int64_t>(PAGE_STEP),
+                                   aEndOffset - readHead);
+      NS_ASSERTION(bytesToRead <= UINT32_MAX, "bytesToRead range check");
+      if (bytesToRead <= 0) {
+        return PAGE_SYNC_END_OF_RANGE;
+      }
+      nsresult rv = NS_OK;
+      if (aCachedDataOnly) {
+        rv = aResource->GetResource()->ReadFromCache(buffer, readHead,
+                                                     static_cast<uint32_t>(bytesToRead));
+        NS_ENSURE_SUCCESS(rv,PAGE_SYNC_ERROR);
+        bytesRead = static_cast<uint32_t>(bytesToRead);
+      } else {
+        rv = aResource->Seek(nsISeekableStream::NS_SEEK_SET, readHead);
+        NS_ENSURE_SUCCESS(rv,PAGE_SYNC_ERROR);
+        rv = aResource->Read(buffer,
+                             static_cast<uint32_t>(bytesToRead),
+                             &bytesRead);
+        NS_ENSURE_SUCCESS(rv,PAGE_SYNC_ERROR);
+      }
+      if (bytesRead == 0 && NS_SUCCEEDED(rv)) {
+        // End of file.
+        return PAGE_SYNC_END_OF_RANGE;
+      }
+      readHead += bytesRead;
+
+      // Update the synchronisation layer with the number
+      // of bytes written to the buffer
+      ret = ogg_sync_wrote(aState, bytesRead);
+      NS_ENSURE_TRUE(ret == 0, PAGE_SYNC_ERROR);
+      continue;
+    }
+
+    if (ret < 0) {
+      NS_ASSERTION(aSkippedBytes >= 0, "Offset >= 0");
+      aSkippedBytes += -ret;
+      NS_ASSERTION(aSkippedBytes >= 0, "Offset >= 0");
+      continue;
+    }
+  }
+
+  return PAGE_SYNC_OK;
+}
 
 //OggTrackDemuxer
 OggTrackDemuxer::OggTrackDemuxer(OggDemuxer* aParent,

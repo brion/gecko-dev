@@ -42,9 +42,48 @@ private:
 
   media::TimeIntervals GetBuffered();
 
-  bool GetOffsetForTime(uint64_t aTime, int64_t* aOffset);
+  // The number of microseconds of "fuzz" we use in a bisection search over
+  // HTTP. When we're seeking with fuzz, we'll stop the search if a bisection
+  // lands between the seek target and SEEK_FUZZ_USECS microseconds before the
+  // seek target.  This is becaue it's usually quicker to just keep downloading
+  // from an exisiting connection than to do another bisection inside that
+  // small range, which would open a new HTTP connetion.
+  static const uint32_t SEEK_FUZZ_USECS = 500000;
+
+  // The number of microseconds of "pre-roll" we use for Opus streams.
+  // The specification recommends 80 ms.
+  static const int64_t SEEK_OPUS_PREROLL = 80 * USECS_PER_MS;
 
   nsresult SeekInternal(const media::TimeUnit& aTarget);
+
+  // Seeks to the keyframe preceding the target time using available
+  // keyframe indexes.
+  enum IndexedSeekResult {
+    SEEK_OK,          // Success.
+    SEEK_INDEX_FAIL,  // Failure due to no index, or invalid index.
+    SEEK_FATAL_ERROR  // Error returned by a stream operation.
+  };
+  IndexedSeekResult SeekToKeyframeUsingIndex(int64_t aTarget);
+
+  // Rolls back a seek-using-index attempt, returning a failure error code.
+  IndexedSeekResult RollbackIndexedSeek(int64_t aOffset);
+
+  // Chunk size to read when reading Ogg files. Average Ogg page length
+  // is about 4300 bytes, so we read the file in chunks larger than that.
+  static const int PAGE_STEP = 8192;
+
+  enum PageSyncResult {
+    PAGE_SYNC_ERROR = 1,
+    PAGE_SYNC_END_OF_RANGE= 2,
+    PAGE_SYNC_OK = 3
+  };
+  static PageSyncResult PageSync(MediaResourceIndex* aResource,
+                                 ogg_sync_state* aState,
+                                 bool aCachedDataOnly,
+                                 int64_t aOffset,
+                                 int64_t aEndOffset,
+                                 ogg_page* aPage,
+                                 int& aSkippedBytes);
 
   // Demux next Ogg packet
   RefPtr<MediaRawData> GetNextPacket(TrackInfo::TrackType aType);
@@ -175,6 +214,9 @@ private:
   // Booleans to indicate if we have audio and/or video data
   bool HasVideo() const;
   bool HasAudio() const;
+  bool HasSkeleton() const {
+    return mSkeletonState != 0 && mSkeletonState->mActive;
+  }
 
   // The picture region inside Theora frame to be displayed, if we have
   // a Theora video track.
