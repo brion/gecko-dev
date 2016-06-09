@@ -81,7 +81,7 @@ private:
   // fails, or is complete. Initializes the codec state before returning.
   // Returns true if reading headers and initializtion of the stream
   // succeeds.
-  bool ReadHeaders(OggCodecState* aState, MediaByteBuffer* aCodecSpecificConfig);
+  bool ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpecificConfig);
 
   // Reads the next link in the chain.
   bool ReadOggChain();
@@ -100,9 +100,9 @@ private:
   void BuildSerialList(nsTArray<uint32_t>& aTracks);
 
   // Setup target bitstreams for decoding.
-  bool SetupTargetTheora();
-  bool SetupTargetVorbis();
-  bool SetupTargetOpus();
+  void SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer> headers);
+  void SetupTargetVorbis(VorbisState *aVorbisState, RefPtr<MediaByteBuffer> headers);
+  void SetupTargetOpus(OpusState *aOpusState);
   void SetupTargetSkeleton();
   void SetupMediaTracksInfo(const nsTArray<uint32_t>& aSerials);
 
@@ -169,7 +169,6 @@ private:
   uint32_t mOpusSerial;
   uint32_t mTheoraSerial;
   vorbis_info mVorbisInfo;
-  int mOpusPreSkip;
   th_info mTheoraInfo;
 
   // Booleans to indicate if we have audio and/or video data

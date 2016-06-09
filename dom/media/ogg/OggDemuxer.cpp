@@ -88,7 +88,6 @@ OggDemuxer::OggDemuxer(MediaResource* aResource)
     mVorbisSerial(0),
     mOpusSerial(0),
     mTheoraSerial(0),
-    mOpusPreSkip(0),
     mIsChained(false),
     mDecodedAudioFrames(0),
     mResource(aResource)
@@ -245,7 +244,7 @@ OggDemuxer::Cleanup()
 }
 
 bool
-OggDemuxer::ReadHeaders(OggCodecState* aState, MediaByteBuffer* aCodecSpecificConfig)
+OggDemuxer::ReadHeaders(OggCodecState* aState, RefPtr<MediaByteBuffer> aCodecSpecificConfig)
 {
   nsTArray<const unsigned char*> headers;
   nsTArray<size_t> headerLens;
@@ -300,26 +299,27 @@ OggDemuxer::BuildSerialList(nsTArray<uint32_t>& aTracks)
   }
 }
 
-bool
-OggDemuxer::SetupTargetTheora()
+void
+OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, RefPtr<MediaByteBuffer> headers)
 {
-  if (!ReadHeaders(mTheoraState, mInfo.mVideo.mCodecSpecificConfig)) {
-    return false;
+  if (mTheoraState) {
+    mTheoraState->Reset();
   }
-  nsIntRect picture = nsIntRect(mTheoraState->mInfo.pic_x,
-                                mTheoraState->mInfo.pic_y,
-                                mTheoraState->mInfo.pic_width,
-                                mTheoraState->mInfo.pic_height);
 
-  nsIntSize displaySize = nsIntSize(mTheoraState->mInfo.pic_width,
-                                    mTheoraState->mInfo.pic_height);
+  nsIntRect picture = nsIntRect(aTheoraState->mInfo.pic_x,
+                                aTheoraState->mInfo.pic_y,
+                                aTheoraState->mInfo.pic_width,
+                                aTheoraState->mInfo.pic_height);
+
+  nsIntSize displaySize = nsIntSize(aTheoraState->mInfo.pic_width,
+                                    aTheoraState->mInfo.pic_height);
 
   // Apply the aspect ratio to produce the intrinsic display size we report
   // to the element.
-  ScaleDisplayByAspectRatio(displaySize, mTheoraState->mPixelAspectRatio);
+  ScaleDisplayByAspectRatio(displaySize, aTheoraState->mPixelAspectRatio);
 
-  nsIntSize frameSize(mTheoraState->mInfo.frame_width,
-                      mTheoraState->mInfo.frame_height);
+  nsIntSize frameSize(aTheoraState->mInfo.frame_width,
+                      aTheoraState->mInfo.frame_height);
   if (IsValidVideoRegion(frameSize, picture, displaySize)) {
     // Video track's frame sizes will not overflow. Activate the video track.
     mInfo.mVideo.mMimeType = "video/ogg; codecs=theora";
@@ -329,52 +329,55 @@ OggDemuxer::SetupTargetTheora()
     // @fixme set mInfo.mVideo.mDuration?
 
     // Copy Theora info data for time computations on other threads.
-    memcpy(&mTheoraInfo, &mTheoraState->mInfo, sizeof(mTheoraInfo));
-    return true;
+    memcpy(&mTheoraInfo, &aTheoraState->mInfo, sizeof(mTheoraInfo));
+
+    // Save header packets for the decoder
+    mInfo.mVideo.mCodecSpecificConfig = headers;
+
+    mTheoraState = aTheoraState;
+    mTheoraSerial = aTheoraState->mSerial;
   }
-  return false;
 }
 
-bool
-OggDemuxer::SetupTargetVorbis()
+void
+OggDemuxer::SetupTargetVorbis(VorbisState *aVorbisState, RefPtr<MediaByteBuffer> headers)
 {
-  if (!ReadHeaders(mVorbisState, mInfo.mAudio.mCodecSpecificConfig)) {
-    return false;
+  if (mVorbisState) {
+    mVorbisState->Reset();
   }
 
   // Copy Vorbis info data for time computations on other threads.
-  memcpy(&mVorbisInfo, &mVorbisState->mInfo, sizeof(mVorbisInfo));
+  memcpy(&mVorbisInfo, &aVorbisState->mInfo, sizeof(mVorbisInfo));
   mVorbisInfo.codec_setup = nullptr;
 
   mInfo.mAudio.mMimeType = "audio/ogg; codecs=vorbis";
+  mInfo.mAudio.mRate = aVorbisState->mInfo.rate;
+  mInfo.mAudio.mChannels = aVorbisState->mInfo.channels;
 
-  // @fixme duration?
-  // @fixme mInfo.mAudio.mRate
-  // @fixme mInfo.mAudio.mChannels
+  // Save header packets for the decoder
+  mInfo.mAudio.mCodecSpecificConfig = headers;
 
-  return true;
+  mVorbisState = aVorbisState;
+  mVorbisSerial = aVorbisState->mSerial;
 }
 
-bool
-OggDemuxer::SetupTargetOpus()
+void
+OggDemuxer::SetupTargetOpus(OpusState *aOpusState)
 {
-  if (!ReadHeaders(mOpusState, mInfo.mAudio.mCodecSpecificConfig)) {
-    return false;
+  if (mOpusState) {
+    mOpusState->Reset();
   }
-  mOpusPreSkip = mOpusState->mPreSkip;
 
   mInfo.mAudio.mMimeType = "audio/ogg; codecs=opus";
+  mInfo.mAudio.mRate = aOpusState->mRate;
+  mInfo.mAudio.mChannels = aOpusState->mChannels;
 
-  // @fixme duration?
-  // @fixme mInfo.mAudio.mRate
-  // @fixme mInfo.mAudio.mChannels
+  uint8_t c[sizeof(uint64_t)];
+  BigEndian::writeUint64(&c[0], aOpusState->mPreSkip);
+  mInfo.mAudio.mCodecSpecificConfig->AppendElements(&c[0], sizeof(uint64_t));
 
-  // @fixme codec-specific setup info
-  //uint8_t c[sizeof(unit64_t)];
-  //BigEndian::writeUint64(&c[0], mCodecDelay);
-  //mInfo.mAudio.mCodecSpecificConfig->AppendElements(&c[0], sizeof(uint64_t));
-
-  return false; // not yet implemented fully
+  mOpusState = aOpusState;
+  mOpusSerial = aOpusState->mSerial;
 }
 
 void
@@ -490,9 +493,6 @@ OggDemuxer::ReadMetadata()
   // and THEN we can run SetupTarget*
   // @fixme fixme
 
-  //NS_ASSERTION(aTags, "Called with null MetadataTags**.");
-  //*aTags = nullptr;
-
   ogg_page page;
   nsTArray<OggCodecState*> bitstreams;
   nsTArray<uint32_t> serials;
@@ -533,29 +533,27 @@ OggDemuxer::ReadMetadata()
   for (uint32_t i = 0; i < bitstreams.Length(); ++i) {
     OggCodecState* s = bitstreams[i];
     if (s) {
-      if (s->GetType() == OggCodecState::TYPE_THEORA) {
-        if (!HasVideo()) {
-          mTheoraSerial = s->mSerial;
-          mTheoraState = static_cast<TheoraState*>(s);
+      RefPtr<MediaByteBuffer> headers(new MediaByteBuffer);
+      if (s->GetType() == OggCodecState::TYPE_THEORA && ReadHeaders(s, headers)) {
+        if (!mTheoraState) {
+          TheoraState* theoraState = static_cast<TheoraState*>(s);
+          SetupTargetTheora(theoraState, headers);
         } else {
-          OGG_DEBUG("Deactivating extra Theora stream %ld", s->mSerial);
           s->Deactivate();
         }
-      } else if (s->GetType() == OggCodecState::TYPE_VORBIS) {
-        if (!HasAudio()) {
-          mVorbisSerial = s->mSerial;
-          mVorbisState = static_cast<VorbisState*>(s);
+      } else if (s->GetType() == OggCodecState::TYPE_VORBIS && ReadHeaders(s, headers)) {
+        if (!mVorbisState) {
+          VorbisState* vorbisState = static_cast<VorbisState*>(s);
+          SetupTargetVorbis(vorbisState, headers);
         } else {
-          OGG_DEBUG("Deactivating extra Vorbis stream %ld", s->mSerial);
           s->Deactivate();
         }
-      } else if (s->GetType() == OggCodecState::TYPE_OPUS /*&& ReadHeaders(s) whaaaat?*/) {
+      } else if (s->GetType() == OggCodecState::TYPE_OPUS && ReadHeaders(s, headers)) {
         if (mOpusEnabled) {
-          if (!HasAudio()) {
-            mOpusSerial = s->mSerial;
-            mOpusState = static_cast<OpusState*>(s);
+          if (!mOpusState) {
+            OpusState* opusState = static_cast<OpusState*>(s);
+            SetupTargetOpus(opusState);
           } else {
-            OGG_DEBUG("Deactivating extra Opus stream %ld", s->mSerial);
             s->Deactivate();
           }
         } else {
@@ -566,46 +564,9 @@ OggDemuxer::ReadMetadata()
         mSkeletonState = static_cast<SkeletonState*>(s);
       } else {
         // Deactivate any non-primary bitstreams.
-        OGG_DEBUG("Deactivating mystery stream %ld", s->mSerial);
         s->Deactivate();
       }
 
-    }
-  }
-
-  // 3. Process all available header packets in the Theora, Vorbis/Opus bitstreams.
-  if (mTheoraState) {
-    if (SetupTargetTheora()) {
-      OGG_DEBUG("Set up Theora stream %ld", mTheoraState->mSerial);
-    } else {
-      OGG_DEBUG("Deactivating Theora stream %ld", mTheoraState->mSerial);
-      mTheoraState->Deactivate();
-      mTheoraState->Reset();
-      mTheoraState = nullptr;
-      mTheoraSerial = 0;
-      // @fixme if this failed we should be able to fall over to opus or...?
-    }
-  }
-  if (mVorbisState) {
-    if (SetupTargetVorbis()) {
-      OGG_DEBUG("Set up Vorbis stream %ld", mVorbisState->mSerial);
-    } else {
-      OGG_DEBUG("Deactivating Vorbis stream %ld", mVorbisState->mSerial);
-      mVorbisState->Deactivate();
-      mVorbisState->Reset();
-      mVorbisState = nullptr;
-      mVorbisSerial = 0;
-    }
-  }
-  if (mOpusState) {
-    if (SetupTargetOpus()) {
-      OGG_DEBUG("Set up Opus stream %ld", mOpusState->mSerial);
-    } else {
-      OGG_DEBUG("Deactivating Opus stream %ld", mOpusState->mSerial);
-      mOpusState->Deactivate();
-      mOpusState->Reset();
-      mOpusState = nullptr;
-      mOpusSerial = 0;
     }
   }
 
