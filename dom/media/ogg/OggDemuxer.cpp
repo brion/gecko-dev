@@ -227,7 +227,6 @@ OggDemuxer::GetTrackDemuxer(TrackInfo::TrackType aType, uint32_t aTrackNumber)
 nsresult
 OggDemuxer::Reset()
 {
-  MOZ_ASSERT(OnTaskQueue());
   nsresult res = NS_OK;
 
   // Discard any previously buffered packets/pages.
@@ -499,8 +498,6 @@ OggDemuxer::SetupMediaTracksInfo(const nsTArray<uint32_t>& aSerials)
 nsresult
 OggDemuxer::ReadMetadata()
 {
-  MOZ_ASSERT(OnTaskQueue());
-
   OGG_DEBUG("OggDemuxer::ReadMetadata called!");
 
   // We read packets until all bitstreams have read all their header packets.
@@ -1123,7 +1120,6 @@ OggDemuxer::GetPageChecksum(ogg_page* page)
 int64_t
 OggDemuxer::RangeStartTime(int64_t aOffset)
 {
-  MOZ_ASSERT(OnTaskQueue());
   nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, aOffset);
   NS_ENSURE_SUCCESS(res, 0);
   int64_t startTime = 0;
@@ -1144,8 +1140,6 @@ struct nsDemuxerAutoOggSyncState {
 int64_t
 OggDemuxer::RangeEndTime(int64_t aEndOffset)
 {
-  MOZ_ASSERT(OnTaskQueue());
-
   int64_t position = mResource.Tell();
   int64_t endTime = RangeEndTime(0, aEndOffset, false);
   nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, position);
