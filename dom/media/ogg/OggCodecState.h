@@ -113,7 +113,7 @@ public:
   // Returns the start time that a granulepos represents.
   virtual int64_t StartTime(int64_t granulepos) { return -1; }
 
-	// Returns the duration of the given packet, if it can be determined.
+  // Returns the duration of the given packet, if it can be determined.
   virtual int64_t PacketDuration(ogg_packet* aPacket) { return -1; };
 
   // Initializes the codec state.
@@ -142,12 +142,12 @@ public:
   // decoding.
   virtual bool IsHeader(ogg_packet* aPacket) { return false; }
 
-	// Returns true if the OggCodecState thinks this packet represents a
-	// keyframe, from which decoding can restart safely.
+  // Returns true if the OggCodecState thinks this packet represents a
+  // keyframe, from which decoding can restart safely.
   virtual bool IsKeyframe(ogg_packet* aPacket) { return true; }
 
-	// Returns true if there is a packet available for dequeueing in the stream.
-	bool IsPacketReady();
+  // Returns true if there is a packet available for dequeueing in the stream.
+  bool IsPacketReady();
 
   // Returns the next raw packet in the stream, or nullptr if there are no more
   // packets buffered in the packet queue. More packets can be buffered by
@@ -169,7 +169,7 @@ public:
   // if there are no more packets buffered in the packet queue. More packets
   // can be buffered by inserting one or more pages into the stream by calling
   // PageIn(). The packet will have a valid granulepos.
-	virtual RefPtr<MediaRawData> PacketOutAsMediaRawData();
+  virtual RefPtr<MediaRawData> PacketOutAsMediaRawData();
 
   // Extracts all packets from the page, and inserts them into the packet
   // queue. They can be extracted by calling PacketOut(). Packets from an

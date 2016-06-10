@@ -181,7 +181,7 @@ void OggPacketQueue::Append(ogg_packet* aPacket) {
 
 bool OggCodecState::IsPacketReady()
 {
-	return !mPackets.IsEmpty();
+  return !mPackets.IsEmpty();
 }
 
 ogg_packet* OggCodecState::PacketOut() {
@@ -202,10 +202,10 @@ RefPtr<MediaRawData> OggCodecState::PacketOutAsMediaRawData()
 {
   ogg_packet *packet = PacketOut();
   if (!packet) {
-  	return nullptr;
+    return nullptr;
   }
 
-	NS_ASSERTION(!IsHeader(packet), "PacketOutAsMediaRawData can only be called on non-header packets");
+  NS_ASSERTION(!IsHeader(packet), "PacketOutAsMediaRawData can only be called on non-header packets");
   RefPtr<MediaRawData> sample = new MediaRawData(packet->packet, packet->bytes);
 
   int64_t end_tstamp = Time(packet->granulepos);
@@ -402,14 +402,14 @@ int64_t TheoraState::StartTime(int64_t granulepos) {
 }
 
 int64_t TheoraState::PacketDuration(ogg_packet* aPacket) {
-	if (!mActive || mInfo.fps_numerator == 0) {
-		return -1;
-	}
-	CheckedInt64 t = CheckedInt64(mInfo.fps_denominator) * USECS_PER_S;
-	if (!t.isValid()) {
-		return -1;
-	}
-	return t.value() / mInfo.fps_numerator;
+  if (!mActive || mInfo.fps_numerator == 0) {
+    return -1;
+  }
+  CheckedInt64 t = CheckedInt64(mInfo.fps_denominator) * USECS_PER_S;
+  if (!t.isValid()) {
+    return -1;
+  }
+  return t.value() / mInfo.fps_numerator;
 }
 
 int64_t
@@ -681,20 +681,20 @@ int64_t VorbisState::Time(vorbis_info* aInfo, int64_t aGranulepos)
 
 int64_t VorbisState::PacketDuration(ogg_packet* aPacket)
 {
-	if (!mActive) {
-		return -1;
-	}
-	if (aPacket->granulepos == -1) {
-		return -1;
-	}
-  // @fixme store these in a more stable place
+  if (!mActive) {
+    return -1;
+  }
+  if (aPacket->granulepos == -1) {
+    return -1;
+  }
+  // @FIXME store these in a more stable place
   if (mVorbisPacketSamples.count(aPacket) == 0) {
-  	// We haven't seen this packet, don't know its size?
-  	return -1;
+    // We haven't seen this packet, don't know its size?
+    return -1;
   }
 
   long samples = mVorbisPacketSamples[aPacket];
-	return Time(samples);
+  return Time(samples);
 }
 
 bool
@@ -1059,8 +1059,8 @@ static int GetOpusDeltaGP(ogg_packet* packet)
 
 int64_t OpusState::PacketDuration(ogg_packet* aPacket)
 {
-	CheckedInt64 t = CheckedInt64(GetOpusDeltaGP(aPacket)) * USECS_PER_S;
-	return t.isValid() ? t.value() / 48000 : -1;
+  CheckedInt64 t = CheckedInt64(GetOpusDeltaGP(aPacket)) * USECS_PER_S;
+  return t.isValid() ? t.value() / 48000 : -1;
 }
 
 bool OpusState::ReconstructOpusGranulepos(void)
