@@ -116,7 +116,11 @@ public:
   // Returns the duration of the given packet, if it can be determined.
   virtual int64_t PacketDuration(ogg_packet *aPacket) { return -1; }
 
+  // Returns the start time of the given packet, if it can be determined.
   virtual int64_t PacketStartTime(ogg_packet *aPacket) {
+    if (aPacket->granulepos < 0) {
+      return -1;
+    }
     int64_t endTime = Time(aPacket->granulepos);
     int64_t duration = PacketDuration(aPacket);
     if (duration > endTime) {
