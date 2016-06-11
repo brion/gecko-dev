@@ -363,8 +363,6 @@ OggDemuxer::SetupTargetTheora(TheoraState *aTheoraState, OggHeaders &aHeaders)
     mInfo.mVideo.mDisplay = displaySize;
     mInfo.mVideo.SetImageRect(picture);
 
-    // @fixme set mInfo.mVideo.mDuration?
-
     // Copy Theora info data for time computations on other threads.
     memcpy(&mTheoraInfo, &aTheoraState->mInfo, sizeof(mTheoraInfo));
 
@@ -651,6 +649,9 @@ OggDemuxer::ReadMetadata()
         mInfo.mMetadataDuration.emplace(media::TimeUnit::FromMicroseconds(endTime - startTime));
         OGG_DEBUG("Got Ogg duration from seeking to end %lld", endTime);
       }
+    }
+    if (mInfo.mMetadataDuration.isNothing()) {
+      mInfo.mMetadataDuration.emplace(media::TimeUnit::FromInfinity());
     }
     if (HasAudio()) {
       mInfo.mAudio.mDuration = mInfo.mMetadataDuration->ToMicroseconds();
