@@ -626,7 +626,7 @@ OggDemuxer::ReadMetadata()
     int64_t startTime = -1;
     FindStartTime(startTime);
     NS_ASSERTION(startTime >= 0, "Must have a non-negative start time");
-    OGG_DEBUG("Detected packet time %lld", startTime);
+    OGG_DEBUG("Detected stream start time %lld", startTime);
     if (startTime >= 0) {
       mStartTime.emplace(startTime);
     }
@@ -921,7 +921,7 @@ OggDemuxer::GetBuffered()
     // we special-case (startOffset == 0) so that the first
     // buffered range always appears to be buffered from the media start
     // time, rather than from the end-time of the first page.
-    int64_t startTime = (HaveStartTime()) ? StartTime() : -1;
+    int64_t startTime = (startOffset == 0) ? StartTime() : -1;
 
     // Find the start time of the range. Read pages until we find one with a
     // granulepos which we can convert into a timestamp to use as the time of
