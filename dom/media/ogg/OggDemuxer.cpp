@@ -1010,8 +1010,7 @@ OggDemuxer::FindStartTime(int64_t& aOutStartTime)
     DemuxUntilPacketAvailable(mTheoraState);
     ogg_packet *pkt = mTheoraState->PacketPeek();
     if (pkt) {
-      // Theora video packet durations are regular.
-      videoStartTime = mTheoraState->StartTime(pkt->granulepos);
+      videoStartTime = mTheoraState->PacketStartTime(pkt);
       OGG_DEBUG("OggDemuxer::FindStartTime() video=%lld", videoStartTime);
     }
   }
@@ -1025,9 +1024,7 @@ OggDemuxer::FindStartTime(int64_t& aOutStartTime)
     DemuxUntilPacketAvailable(audioState);
     ogg_packet *pkt = audioState->PacketPeek();
     if (pkt) {
-      // Audio packet times require knowing the duration.
-      audioStartTime = audioState->Time(pkt->granulepos) -
-                       audioState->PacketDuration(pkt);
+      audioStartTime = audioState->PacketStartTime(pkt);
       OGG_DEBUG("OggReader::FindStartTime() audio=%lld", audioStartTime);
     }
   }

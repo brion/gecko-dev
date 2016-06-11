@@ -114,7 +114,18 @@ public:
   virtual int64_t StartTime(int64_t granulepos) { return -1; }
 
   // Returns the duration of the given packet, if it can be determined.
-  virtual int64_t PacketDuration(ogg_packet* aPacket) { return -1; };
+  virtual int64_t PacketDuration(ogg_packet *aPacket) { return -1; }
+
+  virtual int64_t PacketStartTime(ogg_packet *aPacket) {
+    int64_t endTime = Time(aPacket->granulepos);
+    int64_t duration = PacketDuration(aPacket);
+    if (duration > endTime) {
+      // Audio preskip may eat a whole packet or more.
+      return 0;
+    } else {
+      return endTime - duration;
+    }
+  }
 
   // Initializes the codec state.
   virtual bool Init();
