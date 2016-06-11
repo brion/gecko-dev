@@ -40,7 +40,17 @@ private:
   // helpers for friend OggTrackDemuxer
   UniquePtr<TrackInfo> GetTrackInfo(TrackInfo::TrackType aType, size_t aTrackNumber) const;
 
+  struct nsAutoOggSyncState {
+    nsAutoOggSyncState() {
+      ogg_sync_init(&mState);
+    }
+    ~nsAutoOggSyncState() {
+      ogg_sync_clear(&mState);
+    }
+    ogg_sync_state mState;
+  };
   media::TimeIntervals GetBuffered();
+  void FindStartTime(int64_t& aOutStartTime);
 
   nsresult SeekInternal(const media::TimeUnit& aTarget);
 
@@ -191,12 +201,7 @@ private:
 
   // Set this media as being a chain and notifies the state machine that the
   // media is no longer seekable.
-  void SetChained(bool aIsChained);
-
-  // Returns the next Ogg packet for an bitstream/codec state. Returns a
-  // pointer to an ogg_packet on success, or nullptr if the read failed.
-  // The caller is responsible for deleting the packet and its |packet| field.
-  //ogg_packet* NextOggPacket(OggCodecState* aCodecState);
+  void SetChained();
 
   // Fills aTracks with the serial numbers of each active stream, for use by
   // various SkeletonState functions.
@@ -272,7 +277,10 @@ private:
   uint32_t mOpusSerial;
   uint32_t mTheoraSerial;
   vorbis_info mVorbisInfo;
+  int mOpusPreSkip;
   th_info mTheoraInfo;
+
+  Maybe<int64_t> mStartTime;
 
   // Booleans to indicate if we have audio and/or video data
   bool HasVideo() const;
@@ -280,10 +288,15 @@ private:
   bool HasSkeleton() const {
     return mSkeletonState != 0 && mSkeletonState->mActive;
   }
+  bool HaveStartTime () const;
+  int64_t StartTime() const;
 
   // The picture region inside Theora frame to be displayed, if we have
   // a Theora video track.
   nsIntRect mPicture;
+
+  // This monitor should be taken when reading or writing to mIsChained.
+  ReentrantMonitor mMonitor;
 
   // True if we are decoding a chained ogg. Reading or writing to this member
   // should be done with |mMonitor| acquired.

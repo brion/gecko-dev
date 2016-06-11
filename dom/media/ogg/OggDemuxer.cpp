@@ -23,6 +23,12 @@
 
 #define OGG_DEBUG(arg, ...) MOZ_LOG(gMediaDecoderLog, mozilla::LogLevel::Debug, ("OggDemuxer(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
+// On B2G estimate the buffered ranges rather than calculating them explicitly.
+// This prevents us doing I/O on the main thread, which is prohibited in B2G.
+#ifdef MOZ_WIDGET_GONK
+#define OGG_ESTIMATE_BUFFERED 1
+#endif
+
 // Un-comment to enable logging of seek bisections.
 //#define SEEK_LOGGING
 #ifdef SEEK_LOGGING
@@ -108,6 +114,8 @@ OggDemuxer::OggDemuxer(MediaResource* aResource)
     mVorbisSerial(0),
     mOpusSerial(0),
     mTheoraSerial(0),
+    mOpusPreSkip(0),
+    mMonitor("OggDemuxer"),
     mIsChained(false),
     mDecodedAudioFrames(0),
     mResource(aResource)
@@ -121,6 +129,17 @@ OggDemuxer::~OggDemuxer()
   Reset();
   Cleanup();
   MOZ_COUNT_DTOR(OggDemuxer);
+  if (HasAudio() || HasVideo()) {
+    // If we were able to initialize our decoders, report whether we encountered
+    // a chained stream or not.
+    ReentrantMonitorAutoEnter mon(mMonitor);
+    bool isChained = mIsChained;
+    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction([=]() -> void {
+      OGG_DEBUG("Reporting telemetry MEDIA_OGG_LOADED_IS_CHAINED=%d", isChained);
+      Telemetry::Accumulate(Telemetry::ID::MEDIA_OGG_LOADED_IS_CHAINED, isChained);
+    });
+    AbstractThread::MainThread()->Dispatch(task.forget());
+  }
 }
 
 bool
@@ -135,6 +154,20 @@ OggDemuxer::HasVideo()
 const
 {
   return (mTheoraState != nullptr);
+}
+
+bool
+OggDemuxer::HaveStartTime()
+const
+{
+  return mStartTime.isSome();
+}
+
+int64_t
+OggDemuxer::StartTime()
+const {
+    MOZ_ASSERT(HaveStartTime());
+    return mStartTime.ref();
 }
 
 RefPtr<OggDemuxer::InitPromise>
@@ -258,8 +291,6 @@ void
 OggDemuxer::Cleanup()
 {
   ogg_sync_clear(&mOggState);
-
-  // mBufferedState = nullptr; // ????
 }
 
 bool
@@ -394,6 +425,7 @@ OggDemuxer::SetupTargetOpus(OpusState *aOpusState, OggHeaders &aHeaders)
 
   mOpusState = aOpusState;
   mOpusSerial = aOpusState->mSerial;
+  mOpusPreSkip = aOpusState->mPreSkip;
 }
 
 void
@@ -589,9 +621,17 @@ OggDemuxer::ReadMetadata()
   SetupMediaTracksInfo(serials);
 
   if (HasAudio() || HasVideo()) {
-    //ReentrantMonitorAutoEnter mon(mDecoder->GetReentrantMonitor());
+    ReentrantMonitorAutoEnter mon(mMonitor);
 
-    if (mInfo.mMetadataDuration.isNothing() /*&& !mDecoder->IsOggDecoderShutdown()*/ &&
+    int64_t startTime = -1;
+    FindStartTime(startTime);
+    NS_ASSERTION(startTime >= 0, "Must have a non-negative start time");
+    OGG_DEBUG("Detected packet time %lld", startTime);
+    if (startTime >= 0) {
+      mStartTime.emplace(startTime);
+    }
+
+    if (mInfo.mMetadataDuration.isNothing() &&
         mResource.GetLength() >= 0 && IsSeekable())
     {
       // We didn't get a duration from the index or a Content-Duration header.
@@ -608,7 +648,7 @@ OggDemuxer::ReadMetadata()
       }
       if (endTime != -1) {
         mInfo.mUnadjustedMetadataEndTime.emplace(media::TimeUnit::FromMicroseconds(endTime));
-        mInfo.mMetadataDuration.emplace(media::TimeUnit::FromMicroseconds(endTime));
+        mInfo.mMetadataDuration.emplace(media::TimeUnit::FromMicroseconds(endTime - startTime));
         OGG_DEBUG("Got Ogg duration from seeking to end %lld", endTime);
       }
     }
@@ -625,6 +665,127 @@ OggDemuxer::ReadMetadata()
 
   OGG_DEBUG("success?!");
   return NS_OK;
+}
+
+void
+OggDemuxer::SetChained() {
+  {
+    ReentrantMonitorAutoEnter mon(mMonitor);
+    if (mIsChained) {
+      return;
+    }
+    mIsChained = true;
+  }
+  // @FIXME how can MediaDataDemuxer / MediaTrackDemuxer notify this has changed?
+  //mOnMediaNotSeekable.Notify();
+}
+
+bool
+OggDemuxer::ReadOggChain()
+{
+  bool chained = false;
+  OpusState* newOpusState = nullptr;
+  VorbisState* newVorbisState = nullptr;
+  nsAutoPtr<MetadataTags> tags;
+
+  if (HasVideo() || HasSkeleton() || !HasAudio()) {
+    return false;
+  }
+
+  ogg_page page;
+  if (!ReadOggPage(&page) || !ogg_page_bos(&page)) {
+    return false;
+  }
+
+  int serial = ogg_page_serialno(&page);
+  if (mCodecStore.Contains(serial)) {
+    return false;
+  }
+
+  nsAutoPtr<OggCodecState> codecState;
+  codecState = OggCodecState::Create(&page);
+  if (!codecState) {
+    return false;
+  }
+
+  if (mVorbisState && (codecState->GetType() == OggCodecState::TYPE_VORBIS)) {
+    newVorbisState = static_cast<VorbisState*>(codecState.get());
+  }
+  else if (mOpusState && (codecState->GetType() == OggCodecState::TYPE_OPUS)) {
+    newOpusState = static_cast<OpusState*>(codecState.get());
+  }
+  else {
+    return false;
+  }
+  OggCodecState* state;
+
+  mCodecStore.Add(serial, codecState.forget());
+  state = mCodecStore.Get(serial);
+
+  NS_ENSURE_TRUE(state != nullptr, false);
+
+  if (NS_FAILED(state->PageIn(&page))) {
+    return false;
+  }
+
+  MessageField* msgInfo = nullptr;
+  if (mSkeletonState && mSkeletonState->mMsgFieldStore.Contains(serial)) {
+    mSkeletonState->mMsgFieldStore.Get(serial, &msgInfo);
+  }
+
+  OggHeaders vorbisHeaders;
+  if ((newVorbisState && ReadHeaders(newVorbisState, vorbisHeaders)) &&
+      (mVorbisState->mInfo.rate == newVorbisState->mInfo.rate) &&
+      (mVorbisState->mInfo.channels == newVorbisState->mInfo.channels)) {
+
+    SetupTargetVorbis(newVorbisState, vorbisHeaders);
+    LOG(LogLevel::Debug, ("New vorbis ogg link, serial=%d\n", mVorbisSerial));
+
+    if (msgInfo) {
+      InitTrack(msgInfo, &mInfo.mAudio, true);
+    }
+    mInfo.mAudio.mMimeType = NS_LITERAL_CSTRING("audio/ogg; codec=vorbis");
+    mInfo.mAudio.mRate = newVorbisState->mInfo.rate;
+    mInfo.mAudio.mChannels = newVorbisState->mInfo.channels;
+
+    chained = true;
+    tags = newVorbisState->GetTags();
+  }
+
+  OggHeaders opusHeaders;
+  if ((newOpusState && ReadHeaders(newOpusState, opusHeaders)) &&
+      (mOpusState->mRate == newOpusState->mRate) &&
+      (mOpusState->mChannels == newOpusState->mChannels)) {
+
+    SetupTargetOpus(newOpusState, opusHeaders);
+
+    if (msgInfo) {
+      InitTrack(msgInfo, &mInfo.mAudio, true);
+    }
+    mInfo.mAudio.mMimeType = NS_LITERAL_CSTRING("audio/ogg; codec=opus");
+    mInfo.mAudio.mRate = newOpusState->mRate;
+    mInfo.mAudio.mChannels = newOpusState->mChannels;
+
+    chained = true;
+    tags = newOpusState->GetTags();
+  }
+
+  if (chained) {
+    SetChained();
+    {
+      // @FIXME notify this!
+      /*
+      auto t = mDecodedAudioFrames * USECS_PER_S / mInfo.mAudio.mRate;
+      mTimedMetadataEvent.Notify(
+        TimedMetadata(media::TimeUnit::FromMicroseconds(t),
+                      Move(tags),
+                      nsAutoPtr<MediaInfo>(new MediaInfo(mInfo))));
+      */
+    }
+    return true;
+  }
+
+  return false;
 }
 
 bool
@@ -717,53 +878,164 @@ OggDemuxer::DemuxUntilPacketAvailable(OggCodecState *state)
 media::TimeIntervals
 OggDemuxer::GetBuffered()
 {
-  //EnsureUpToDateIndex();
-  AutoPinned<MediaResource> resource(mResource.GetResource());
-
-  media::TimeIntervals buffered;
-
-  return media::TimeIntervals();
-  /*
-  nsTArray<MediaByteRange> ranges;
-  nsresult rv = resource->GetCachedRanges(ranges);
-  if (NS_FAILED(rv)) {
+  if (!HaveStartTime()) {
     return media::TimeIntervals();
   }
-  uint64_t duration = 0;
-  uint64_t startOffset = 0;
-  */
-  /*
-  if (!nestegg_duration(mContext, &duration)) {
-    if(mBufferedState->GetStartTime(&startOffset)) {
-      duration += startOffset;
+  {
+    //mozilla::ReentrantMonitorAutoEnter mon(mMonitor);
+    if (mIsChained) {
+      return media::TimeIntervals::Invalid();
     }
-    OGG_DEBUG("Duration: %f StartTime: %f",
-               media::TimeUnit::FromNanoseconds(duration).ToSeconds(),
-               media::TimeUnit::FromNanoseconds(startOffset).ToSeconds());
   }
-  for (uint32_t index = 0; index < ranges.Length(); index++) {
-    uint64_t start, end;
-    bool rv = mBufferedState->CalculateBufferedForRange(ranges[index].mStart,
-                                                        ranges[index].mEnd,
-                                                        &start, &end);
-    if (rv) {
-      NS_ASSERTION(startOffset <= start,
-          "startOffset negative or larger than start time");
+#ifdef OGG_ESTIMATE_BUFFERED
+  // @FIXME this won't work
+  //return MediaDecoderReader::GetBuffered();
+  return media::TimeIntervals::Invalid();
+#else
+  media::TimeIntervals buffered;
+  // HasAudio and HasVideo are not used here as they take a lock and cause
+  // a deadlock. Accessing mInfo doesn't require a lock - it doesn't change
+  // after metadata is read.
+  if (!mInfo.HasValidMedia()) {
+    // No need to search through the file if there are no audio or video tracks
+    return buffered;
+  }
 
-      if (duration && end > duration) {
-        OGG_DEBUG("limit range to duration, end: %f duration: %f",
-                   media::TimeUnit::FromNanoseconds(end).ToSeconds(),
-                   media::TimeUnit::FromNanoseconds(duration).ToSeconds());
-        end = duration;
+  AutoPinned<MediaResource> resource(mResource.GetResource());
+  MediaByteRangeSet ranges;
+  nsresult res = resource->GetCachedRanges(ranges);
+  NS_ENSURE_SUCCESS(res, media::TimeIntervals::Invalid());
+
+  // Traverse across the buffered byte ranges, determining the time ranges
+  // they contain. MediaResource::GetNextCachedData(offset) returns -1 when
+  // offset is after the end of the media resource, or there's no more cached
+  // data after the offset. This loop will run until we've checked every
+  // buffered range in the media, in increasing order of offset.
+  nsAutoOggSyncState sync;
+  for (uint32_t index = 0; index < ranges.Length(); index++) {
+    // Ensure the offsets are after the header pages.
+    int64_t startOffset = ranges[index].mStart;
+    int64_t endOffset = ranges[index].mEnd;
+
+    // Because the granulepos time is actually the end time of the page,
+    // we special-case (startOffset == 0) so that the first
+    // buffered range always appears to be buffered from the media start
+    // time, rather than from the end-time of the first page.
+    int64_t startTime = (HaveStartTime()) ? StartTime() : -1;
+
+    // Find the start time of the range. Read pages until we find one with a
+    // granulepos which we can convert into a timestamp to use as the time of
+    // the start of the buffered range.
+    ogg_sync_reset(&sync.mState);
+    while (startTime == -1) {
+      ogg_page page;
+      int32_t discard;
+      PageSyncResult pageSyncResult = PageSync(&mResource,
+                                               &sync.mState,
+                                               true,
+                                               startOffset,
+                                               endOffset,
+                                               &page,
+                                               discard);
+      if (pageSyncResult == PAGE_SYNC_ERROR) {
+        return media::TimeIntervals::Invalid();
+      } else if (pageSyncResult == PAGE_SYNC_END_OF_RANGE) {
+        // Hit the end of range without reading a page, give up trying to
+        // find a start time for this buffered range, skip onto the next one.
+        break;
       }
-      media::TimeUnit startTime = media::TimeUnit::FromNanoseconds(start);
-      media::TimeUnit endTime = media::TimeUnit::FromNanoseconds(end);
-      OGG_DEBUG("add range %f-%f", startTime.ToSeconds(), endTime.ToSeconds());
-      buffered += media::TimeInterval(startTime, endTime);
+
+      int64_t granulepos = ogg_page_granulepos(&page);
+      if (granulepos == -1) {
+        // Page doesn't have an end time, advance to the next page
+        // until we find one.
+        startOffset += page.header_len + page.body_len;
+        continue;
+      }
+
+      uint32_t serial = ogg_page_serialno(&page);
+      if (mVorbisState && serial == mVorbisSerial) {
+        startTime = VorbisState::Time(&mVorbisInfo, granulepos);
+        NS_ASSERTION(startTime > 0, "Must have positive start time");
+      }
+      else if (mOpusState && serial == mOpusSerial) {
+        startTime = OpusState::Time(mOpusPreSkip, granulepos);
+        NS_ASSERTION(startTime > 0, "Must have positive start time");
+      }
+      else if (mTheoraState && serial == mTheoraSerial) {
+        startTime = TheoraState::Time(&mTheoraInfo, granulepos);
+        NS_ASSERTION(startTime > 0, "Must have positive start time");
+      }
+      else if (mCodecStore.Contains(serial)) {
+        // Stream is not the theora or vorbis stream we're playing,
+        // but is one that we have header data for.
+        startOffset += page.header_len + page.body_len;
+        continue;
+      }
+      else {
+        // Page is for a stream we don't know about (possibly a chained
+        // ogg), return OK to abort the finding any further ranges. This
+        // prevents us searching through the rest of the media when we
+        // may not be able to extract timestamps from it.
+        SetChained();
+        return buffered;
+      }
+    }
+
+    if (startTime != -1) {
+      // We were able to find a start time for that range, see if we can
+      // find an end time.
+      int64_t endTime = RangeEndTime(startOffset, endOffset, true);
+      if (endTime > startTime) {
+        buffered += media::TimeInterval(
+           media::TimeUnit::FromMicroseconds(startTime - StartTime()),
+           media::TimeUnit::FromMicroseconds(endTime - StartTime()));
+      }
     }
   }
-  */
-  return buffered; // @fixme
+
+  return buffered;
+#endif
+}
+
+void
+OggDemuxer::FindStartTime(int64_t& aOutStartTime)
+{
+  // Extract the start times of the bitstreams in order to calculate
+  // the duration.
+  int64_t videoStartTime = INT64_MAX;
+  int64_t audioStartTime = INT64_MAX;
+
+  if (HasVideo()) {
+    DemuxUntilPacketAvailable(mTheoraState);
+    ogg_packet *pkt = mTheoraState->PacketPeek();
+    if (pkt) {
+      // Theora video packet durations are regular.
+      videoStartTime = mTheoraState->StartTime(pkt->granulepos);
+      OGG_DEBUG("OggDemuxer::FindStartTime() video=%lld", videoStartTime);
+    }
+  }
+  if (HasAudio()) {
+    OggCodecState *audioState;
+    if (mVorbisState) {
+      audioState = mVorbisState;
+    } else {
+      audioState = mOpusState;
+    }
+    DemuxUntilPacketAvailable(audioState);
+    ogg_packet *pkt = audioState->PacketPeek();
+    if (pkt) {
+      // Audio packet times require knowing the duration.
+      audioStartTime = audioState->Time(pkt->granulepos) -
+                       audioState->PacketDuration(pkt);
+      OGG_DEBUG("OggReader::FindStartTime() audio=%lld", audioStartTime);
+    }
+  }
+
+  int64_t startTime = std::min(videoStartTime, audioStartTime);
+  if (startTime != INT64_MAX) {
+    aOutStartTime = startTime;
+  }
 }
 
 nsresult
@@ -773,7 +1045,7 @@ OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
   OGG_DEBUG("About to seek to %lld", target);
   nsresult res;
   int64_t adjustedTarget = target;
-  int64_t startTime = 0;
+  int64_t startTime = StartTime();
   int64_t endTime = mInfo.mMetadataDuration->ToMicroseconds();
   if (HasAudio() && mOpusState){
     adjustedTarget = std::max(startTime, target - OGG_SEEK_OPUS_PREROLL);
@@ -1123,7 +1395,7 @@ OggDemuxer::RangeStartTime(int64_t aOffset)
   nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, aOffset);
   NS_ENSURE_SUCCESS(res, 0);
   int64_t startTime = 0;
-  //FindStartTime(startTime); // @fixme
+  FindStartTime(startTime); // @fixme
   return startTime;
 }
 
@@ -1268,7 +1540,7 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
       // This page is from a bitstream which we haven't encountered yet.
       // It's probably from a new "link" in a "chained" ogg. Don't
       // bother even trying to find a duration...
-      //SetChained(true); // @fixme fix this :D
+      SetChained();
       endTime = -1;
       OGG_DEBUG("breaking because no matching codec state");
       break;
