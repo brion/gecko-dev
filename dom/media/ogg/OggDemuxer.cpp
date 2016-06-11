@@ -857,9 +857,16 @@ RefPtr<MediaRawData>
 OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
 {
   OggCodecState *state = GetTrackCodecState(aType);
-  //ogg_packet *pkt = DemuxUntilPacketAvailable(state);
   DemuxUntilPacketAvailable(state);
-  return state->PacketOutAsMediaRawData();
+  ogg_packet *packet = state->PacketPeek();
+  RefPtr<MediaRawData> data = state->PacketOutAsMediaRawData();;
+
+  if (packet && packet->e_o_s) {
+    // We've encountered an end of bitstream packet; check for a chained
+    // bitstream following this one.
+    ReadOggChain();
+  }
+  return data;
 }
 
 void
