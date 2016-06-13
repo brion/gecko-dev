@@ -888,7 +888,6 @@ OggDemuxer::GetBuffered()
     return media::TimeIntervals();
   }
   {
-    //mozilla::ReentrantMonitorAutoEnter mon(mMonitor);
     if (mIsChained) {
       return media::TimeIntervals::Invalid();
     }
