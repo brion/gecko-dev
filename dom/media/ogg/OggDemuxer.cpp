@@ -23,12 +23,6 @@
 
 #define OGG_DEBUG(arg, ...) MOZ_LOG(gMediaDecoderLog, mozilla::LogLevel::Debug, ("OggDemuxer(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
-// On B2G estimate the buffered ranges rather than calculating them explicitly.
-// This prevents us doing I/O on the main thread, which is prohibited in B2G.
-#ifdef MOZ_WIDGET_GONK
-#define OGG_ESTIMATE_BUFFERED 1
-#endif
-
 // Un-comment to enable logging of seek bisections.
 //#define SEEK_LOGGING
 #ifdef SEEK_LOGGING
@@ -899,11 +893,6 @@ OggDemuxer::GetBuffered()
       return media::TimeIntervals::Invalid();
     }
   }
-#ifdef OGG_ESTIMATE_BUFFERED
-  // @FIXME this won't work
-  //return MediaDecoderReader::GetBuffered();
-  return media::TimeIntervals::Invalid();
-#else
   media::TimeIntervals buffered;
   // HasAudio and HasVideo are not used here as they take a lock and cause
   // a deadlock. Accessing mInfo doesn't require a lock - it doesn't change
@@ -1007,7 +996,6 @@ OggDemuxer::GetBuffered()
   }
 
   return buffered;
-#endif
 }
 
 void
