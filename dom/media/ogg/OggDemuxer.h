@@ -349,6 +349,7 @@ public:
   nsTArray<size_t> mHeaderLens;
 
   OggHeaders();
+  ~OggHeaders();
   void AppendPacket(const ogg_packet *aPacket);
 };
 

@@ -2005,6 +2005,14 @@ OggHeaders::OggHeaders()
   // no-op
 }
 
+OggHeaders::~OggHeaders()
+{
+  int i;
+  for (i = 0; i < mHeaders.Length(); i++) {
+    delete mHeaders[i];
+  }
+}
+
 void
 OggHeaders::AppendPacket(const ogg_packet *aPacket)
 {
