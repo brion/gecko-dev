@@ -20,6 +20,7 @@ AgnosticDecoderModule::SupportsMimeType(const nsACString& aMimeType,
   return VPXDecoder::IsVPX(aMimeType) ||
     OpusDataDecoder::IsOpus(aMimeType) ||
     VorbisDataDecoder::IsVorbis(aMimeType) ||
+    WaveDataDecoder::IsWave(aMimeType) ||
     TheoraDecoder::IsTheora(aMimeType);
 }
 
