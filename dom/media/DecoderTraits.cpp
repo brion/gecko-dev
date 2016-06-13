@@ -14,10 +14,7 @@
 #include "OggDecoder.h"
 #include "OggReader.h"
 #include "OggDemuxer.h"
-#ifdef MOZ_WAVE
-#include "WaveDecoder.h"
-#include "WaveReader.h"
-#endif
+
 #include "WebMDecoder.h"
 #include "WebMDemuxer.h"
 
