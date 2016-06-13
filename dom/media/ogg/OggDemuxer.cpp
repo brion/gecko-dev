@@ -1100,6 +1100,29 @@ OggDemuxer::SeekInternal(const media::TimeUnit& aTarget)
     }
   }
 
+  if (HasVideo()) {
+    // Demux forwards until we find the next keyframe. This is required,
+    // as although the seek should finish on a page containing a keyframe,
+    // there may be non-keyframes in the page before the keyframe.
+    // When doing fastSeek we display the first frame after the seek, so
+    // we need to advance the decode to the keyframe otherwise we'll get
+    // visual artifacts in the first frame output after the seek.
+    while (true) {
+      DemuxUntilPacketAvailable(mTheoraState);
+      ogg_packet *packet = mTheoraState->PacketPeek();
+      if (packet == nullptr) {
+        OGG_DEBUG("End of Theora stream reached before keyframe found in indexed seek");
+        break;
+      }
+      if (mTheoraState->IsKeyframe(packet)) {
+        OGG_DEBUG("Theora keyframe found after seek");
+        break;
+      }
+      // Discard video packets before the first keyframe.
+      ogg_packet *releaseMe = mTheoraState->PacketOut();
+      OggCodecState::ReleasePacket(releaseMe);
+    }
+  }
   return NS_OK;
 }
 
@@ -1280,6 +1303,7 @@ OggTrackDemuxer::Seek(media::TimeUnit aTime)
   // Seeks to aTime. Upon success, SeekPromise will be resolved with the
   // actual time seeked to. Typically the random access point time
 
+  mQueuedSample = nullptr;
   media::TimeUnit seekTime = aTime;
   if (mParent->SeekInternal(aTime) == NS_OK) {
     RefPtr<MediaRawData> sample(NextSample());
@@ -1337,6 +1361,7 @@ void
 OggTrackDemuxer::Reset()
 {
   mParent->ResetTrackState(mType);
+  mQueuedSample = nullptr;
   media::TimeIntervals buffered = GetBuffered();
   if (buffered.Length()) {
     OGG_DEBUG("Seek to start point: %f", buffered.Start(0).ToSeconds());
