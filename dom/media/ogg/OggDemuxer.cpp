@@ -1984,7 +1984,7 @@ OggHeaders::OggHeaders()
 
 OggHeaders::~OggHeaders()
 {
-  int i;
+  size_t i;
   for (i = 0; i < mHeaders.Length(); i++) {
     delete mHeaders[i];
   }
