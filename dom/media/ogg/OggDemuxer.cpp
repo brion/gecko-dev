@@ -858,10 +858,14 @@ OggDemuxer::GetNextPacket(TrackInfo::TrackType aType)
 {
   OggCodecState *state = GetTrackCodecState(aType);
   DemuxUntilPacketAvailable(state);
+
+  // Check the eos state in case we need to look for chained streams.
   ogg_packet *packet = state->PacketPeek();
+  bool eos = (packet && packet->e_o_s);
+
   RefPtr<MediaRawData> data = state->PacketOutAsMediaRawData();;
 
-  if (packet && packet->e_o_s) {
+  if (eos) {
     // We've encountered an end of bitstream packet; check for a chained
     // bitstream following this one.
     ReadOggChain();

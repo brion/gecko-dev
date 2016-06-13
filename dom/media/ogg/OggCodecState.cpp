@@ -219,6 +219,10 @@ RefPtr<MediaRawData> OggCodecState::PacketOutAsMediaRawData()
   sample->mDuration = duration;
   sample->mKeyframe = IsKeyframe(packet);
 
+  // The packet's data now belongs to the ref-counted MediaRawData instance;
+  // free the ogg_packet structure only.
+  delete packet;
+
   return sample;
 }
 
