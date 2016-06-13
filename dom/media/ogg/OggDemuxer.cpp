@@ -1463,7 +1463,6 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
   uint32_t prevChecksumAfterSeek = 0;
   bool mustBackOff = false;
   while (true) {
-    OGG_DEBUG("%lld @ %lld-%lld ; time %lld", readHead, readStartOffset, readLimitOffset, endTime);
     ogg_page page;
     int ret = ogg_sync_pageseek(&sync.mState, &page);
     if (ret == 0) {
@@ -1472,7 +1471,6 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
       if (mustBackOff || readHead == aEndOffset || readHead == aStartOffset) {
         if (endTime != -1 || readStartOffset == 0) {
           // We have encountered a page before, or we're at the end of file.
-          OGG_DEBUG("end of file or confused");
           break;
         }
         mustBackOff = false;
@@ -1498,7 +1496,6 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
       char* buffer = ogg_sync_buffer(&sync.mState, bytesToRead);
       NS_ASSERTION(buffer, "Must have buffer");
       nsresult res;
-      OGG_DEBUG("reading %ld bytes starting at %lld", bytesToRead, readHead);
       if (aCachedDataOnly) {
         res = mResource.GetResource()->ReadFromCache(buffer, readHead, bytesToRead);
         NS_ENSURE_SUCCESS(res, -1);
@@ -1521,15 +1518,12 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
       ret = ogg_sync_wrote(&sync.mState, bytesRead);
       if (ret != 0) {
         endTime = -1;
-        OGG_DEBUG("failed right at the end, confused");
         break;
       }
-      OGG_DEBUG("continuing after first check");
       continue;
     }
 
     if (ret < 0 || ogg_page_granulepos(&page) < 0) {
-      OGG_DEBUG("continuing because something failed on a page?");
       continue;
     }
 
@@ -1547,7 +1541,6 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
       // page and failed to find an end time, we may as well backoff again and
       // try to find an end time from an earlier page.
       mustBackOff = true;
-      OGG_DEBUG("continuing because we didn't back up far enough");
       continue;
     }
 
@@ -1556,19 +1549,16 @@ OggDemuxer::RangeEndTime(int64_t aStartOffset,
 
     OggCodecState* codecState = nullptr;
     codecState = mCodecStore.Get(serial);
-    OGG_DEBUG("got codec state for serial %d", serial);
     if (!codecState) {
       // This page is from a bitstream which we haven't encountered yet.
       // It's probably from a new "link" in a "chained" ogg. Don't
       // bother even trying to find a duration...
       SetChained();
       endTime = -1;
-      OGG_DEBUG("breaking because no matching codec state");
       break;
     }
 
     int64_t t = codecState->Time(granulepos);
-    OGG_DEBUG("got time %lld", t);
     if (t != -1) {
       endTime = t;
     }
