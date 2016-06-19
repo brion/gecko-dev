@@ -1298,6 +1298,7 @@ OggTrackDemuxer::Seek(media::TimeUnit aTime)
     // Check what time we actually seeked to.
     if (sample != nullptr) {
       seekTime = media::TimeUnit::FromMicroseconds(sample->mTime);
+      OGG_DEBUG("%p seeked to time %lld", this, seekTime.ToMicroseconds());
     }
     mQueuedSample = sample;
 
