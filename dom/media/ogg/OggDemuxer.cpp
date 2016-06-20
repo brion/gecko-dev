@@ -1414,10 +1414,13 @@ OggDemuxer::GetPageChecksum(ogg_page* page)
 int64_t
 OggDemuxer::RangeStartTime(int64_t aOffset)
 {
+  int64_t position = mResource.Tell();
   nsresult res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, aOffset);
   NS_ENSURE_SUCCESS(res, 0);
   int64_t startTime = 0;
   FindStartTime(startTime); // @fixme
+  res = mResource.Seek(nsISeekableStream::NS_SEEK_SET, position);
+  NS_ENSURE_SUCCESS(res, -1);
   return startTime;
 }
 
